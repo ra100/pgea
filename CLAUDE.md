@@ -17,31 +17,31 @@ The full design lives in `docs/superpowers/specs/2026-05-14-pg-rds-connector-des
 
 ## Commands
 
-The crate is not yet scaffolded. Once `Cargo.toml` exists, the conventional commands are:
-
 - Build: `cargo build` (release: `cargo build --release`)
 - Run: `cargo run -- --config <path> --listen 127.0.0.1:5433`
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - Format check: `cargo fmt --check`
-- Tests: `cargo test`
+- Tests: `cargo test` (unit + `tests/extended_query.rs` integration suite drives the proxy via `tokio-postgres` against a `MockRdsClient`)
 - Single test: `cargo test <test_name>` or `cargo test --test <integration_file> <test_name>`
-- E2E tests against a real cluster are gated by an env var (TBD when implemented; the spec calls for it to be opt-in).
+- E2E against a real Aurora cluster is not yet wired up (Plans.md M7). Spec calls for an opt-in env-var gate when implemented.
 
 ## Architecture
 
 The proxy is structured around two strict module boundaries:
 
-- `pg::*` — speaks pg wire only. Knows nothing of AWS.
-- `rds::*` — speaks RDS Data API only. Knows nothing of pg wire.
-- `server.rs` — orchestrates a pg session against an rds session. The only place where the two halves meet.
+- `pg::*` — speaks pg wire only (`pg/server.rs` holds the startup handler, simple-query handler, and extended-query handler). Knows nothing of AWS.
+- `rds::*` — speaks RDS Data API only (`rds/client.rs` for the `RdsClient` trait + `AwsRdsClient` SDK impl + `MockRdsClient` test double; `rds/txn.rs` for `TxnState`). Knows nothing of pg wire.
+- Top-level helpers — `intercept.rs` (verb classification + unsupported-op rejection), `rewriter.rs` (`$N` → `:pN` with a hand-rolled lexer), `catalog.rs` (targeted rewrites of GUI catalog probes that hit Data API type-output restrictions), `types.rs` (typeName→pg OID map + text-format encoders), `config.rs`, `main.rs`.
+- `pg/server.rs` is the only place where the pg and rds halves meet.
 
-Per-pg-connection state lives in a Tokio task and holds: resolved target (cluster ARN, secret ARN, database, region, profile), an `aws_sdk_rdsdata::Client` initialised for that profile, an optional active `transactionId`, and prepared-statement / portal maps for the Extended Query protocol.
+Per-pg-connection state lives in a Tokio task and holds: resolved target (cluster ARN, secret ARN, database, region, profile), an `Arc<dyn RdsClient>` initialised for that profile, an optional active `transactionId`, and prepared-statement / portal maps for the Extended Query protocol.
 
 ### Translation flow
 
 - Simple Query (`Q`): intercept layer rejects unsupported ops (`SAVEPOINT`, `COPY`, cursors, `LISTEN`/`NOTIFY`) with a clean pg error; transaction verbs map to `BeginTransaction` / `CommitTransaction` / `RollbackTransaction`; everything else is `ExecuteStatement`.
 - Extended Query (`P`/`B`/`D`/`E`/`S`): `Parse` stores SQL+param OIDs, `Bind` rewrites `$N` → `:pN` (lexer skips strings, comments, dollar-quoted blocks) and converts pg-encoded params to Data API `SqlParameter`s, `Execute` runs `ExecuteStatement` and emits `RowDescription` + `DataRow`s + `CommandComplete`, `Sync` emits `ReadyForQuery` with txn status.
-- Response translation: `columnMetadata.typeName` is mapped to pg OIDs via a static `phf` table; values are always sent in pg text format. Data API errors become pg `ErrorResponse`; errors inside a transaction set the txn status to `E` until the client `ROLLBACK`s.
+- Response translation: `columnMetadata.typeName` is mapped to pg OIDs via the static `match` table in `types.rs` (~40 entries — equivalent perf to `phf`, simpler to maintain); values are always sent in pg text format. Data API errors become pg `ErrorResponse`; errors inside a transaction set the txn status to `E` until the client `ROLLBACK`s.
+- Catalog-query rewriting: GUI clients (DBeaver/DataGrip/psql `\d`) issue `pg_catalog.*` probes that the Data API refuses to return because columns use unsupported output types (`bpchar`, `TIME`, `INTERVAL`, `oid[]`, etc). `catalog.rs` pattern-matches a fixed set of these queries and casts the offending columns to `text` (or `NULL`s out unsupported ones like `relpartbound`, `relacl`). The module is intentionally narrow — no general SQL rewriting.
 
 ### Configuration
 
@@ -54,6 +54,15 @@ Config file at `~/.config/pg-rds-connector/config.toml` (override via `--config`
 - No SQL parsing beyond what the spec calls for: a leading-keyword regex for verb detection / intercept, and a parameter-rewriting lexer that respects strings, comments, and dollar-quoted blocks.
 - Out of scope for v1: `COPY`, server-side cursors, `LISTEN`/`NOTIFY`, `SAVEPOINT`, prepared-statement caching across sessions, multi-statement Simple Query, auto-pagination, TLS to client. Adding any of these requires updating the spec first.
 - Logging: connection events, target resolution, profile used, and Data API call counts at `info`; SQL bodies only at `debug`.
+
+## Coding guidelines (Karpathy)
+
+Adapted from <https://github.com/multica-ai/andrej-karpathy-skills>. Bias toward caution over speed; use judgment on trivial tasks. The `karpathy-guidelines` skill has the full text.
+
+1. **Think before coding.** State assumptions. If multiple interpretations exist, surface them — don't pick silently. If something is unclear, stop and ask.
+2. **Simplicity first.** Minimum code that solves the problem. No speculative features, no abstractions for single-use code, no error handling for impossible scenarios. If 200 lines could be 50, rewrite.
+3. **Surgical changes.** Touch only what the request requires. Don't "improve" adjacent code, refactor things that aren't broken, or delete pre-existing dead code unless asked. Match existing style. Every changed line should trace to the user's request.
+4. **Goal-driven execution.** Turn tasks into verifiable goals ("write a test that reproduces the bug, then make it pass"). For multi-step work, state a brief plan with a check per step and loop until verified.
 
 # context-mode — MANDATORY routing rules
 
