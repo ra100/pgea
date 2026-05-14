@@ -1,5 +1,7 @@
 # pg-rds-connector
 
+[![CI](https://github.com/svarba/pg-rds-connector/actions/workflows/ci.yml/badge.svg)](https://github.com/svarba/pg-rds-connector/actions/workflows/ci.yml)
+
 Local PostgreSQL wire-protocol proxy that translates queries into [AWS RDS
 Data API](https://docs.aws.amazon.com/rdsdataservice/latest/APIReference/Welcome.html)
 calls.
