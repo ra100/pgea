@@ -96,7 +96,9 @@ c.relkind::text AS relkind, \
 c.relnatts, c.relchecks, c.relhasrules, c.relhastriggers, c.relhassubclass, \
 c.relrowsecurity, c.relforcerowsecurity, c.relispopulated, \
 c.relreplident::text AS relreplident, \
-c.relispartition, c.relrewrite, c.relfrozenxid, c.relminmxid, \
+c.relispartition, c.relrewrite, \
+c.relfrozenxid::text AS relfrozenxid, \
+c.relminmxid::text AS relminmxid, \
 NULL::text AS relacl, \
 NULL::text AS reloptions, \
 NULL::text AS relpartbound";
