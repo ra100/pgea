@@ -42,8 +42,12 @@ fn rewrite_pg_type_star(sql: &str) -> Option<String> {
     // Explicit column list for pg_type. Casts the four CHAR(1) columns to
     // text. Order matches `pg_type` (PG 14+) but ordering is not load-bearing
     // — DBeaver indexes columns by name from the result metadata.
+    // Every char(1) column in pg_type must be cast: typtype, typcategory,
+    // typdelim, typalign, typstorage. Missing one resurrects the
+    // UnsupportedResultException.
     let cols = "\
-t.typname, t.typnamespace, t.typowner, t.typlen, t.typbyval, t.typtype, \
+t.typname, t.typnamespace, t.typowner, t.typlen, t.typbyval, \
+t.typtype::text AS typtype, \
 t.typcategory::text AS typcategory, t.typispreferred, t.typisdefined, \
 t.typdelim::text AS typdelim, t.typrelid, t.typsubscript, t.typelem, \
 t.typarray, t.typinput, t.typoutput, t.typreceive, t.typsend, t.typmodin, \
@@ -62,8 +66,11 @@ mod tests {
     fn rewrites_pg_type_star() {
         let sql = "SELECT t.oid,t.*,c.relkind FROM pg_catalog.pg_type t LEFT JOIN pg_catalog.pg_class c ON c.oid=t.typrelid";
         let out = maybe_rewrite(sql).expect("should match");
+        assert!(out.contains("t.typtype::text AS typtype"));
         assert!(out.contains("t.typcategory::text AS typcategory"));
         assert!(out.contains("t.typdelim::text AS typdelim"));
+        assert!(out.contains("t.typalign::text AS typalign"));
+        assert!(out.contains("t.typstorage::text AS typstorage"));
         assert!(!out.contains("t.*"));
         assert!(out.contains("t.oid"));
         assert!(out.contains("c.relkind"));
