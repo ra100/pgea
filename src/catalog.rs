@@ -77,6 +77,11 @@ fn rewrite_pg_class_star(sql: &str) -> Option<String> {
     // returns the internal node-tree representation which contains NUL
     // bytes that the Data API rejects as invalid UTF-8. Substitute with
     // pg_get_expr(...) so we still get a printable value or NULL.
+    //
+    // We also strip d.description and the trailing pg_get_partkeydef call
+    // because those occasionally yield strings containing 0x00 (the Data
+    // API only allows valid UTF-8 with no NULs). DBeaver tolerates NULL
+    // in those positions.
     let cols = "\
 c.relname, c.relnamespace, c.reltype, c.reloftype, c.relowner, c.relam, \
 c.relfilenode, c.reltablespace, c.relpages, c.reltuples, c.relallvisible, \
@@ -90,7 +95,34 @@ c.relispartition, c.relrewrite, c.relfrozenxid, c.relminmxid, \
 c.relacl::text AS relacl, \
 c.reloptions::text AS reloptions, \
 pg_catalog.pg_get_expr(c.relpartbound, c.oid) AS relpartbound";
-    Some(STAR_RE.replace(sql, cols).into_owned())
+    let mut out = STAR_RE.replace(sql, cols).into_owned();
+
+    // DBeaver also projects d.description and pg_get_partkeydef(c.oid).
+    // Both have produced rows with embedded 0x00 in our environment which
+    // the Data API rejects with "invalid byte sequence for encoding UTF8".
+    // Replace each with NULL so the projection shape is unchanged.
+    static D_DESC: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bd\.description\b").unwrap());
+    static PARTKEYDEF: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?i)pg_catalog\.pg_get_partkeydef\s*\(\s*c\.oid\s*\)\s*as\s+partition_key",
+        )
+        .unwrap()
+    });
+    static PARTEXPR: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?i)pg_catalog\.pg_get_expr\s*\(\s*c\.relpartbound\s*,\s*c\.oid\s*\)\s*as\s+partition_expr",
+        )
+        .unwrap()
+    });
+    out = D_DESC.replace_all(&out, "NULL").into_owned();
+    out = PARTKEYDEF
+        .replace_all(&out, "NULL AS partition_key")
+        .into_owned();
+    out = PARTEXPR
+        .replace_all(&out, "NULL AS partition_expr")
+        .into_owned();
+
+    Some(out)
 }
 
 /// DBeaver schema browser fires
@@ -236,13 +268,17 @@ mod tests {
 
     #[test]
     fn rewrites_pg_class_star() {
-        let sql = "SELECT c.oid,c.*,d.description FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_description d ON d.objoid=c.oid WHERE c.relnamespace=:p1 AND c.relkind not in ('i','c')";
+        let sql = "SELECT c.oid,c.*,d.description,pg_catalog.pg_get_expr(c.relpartbound, c.oid) as partition_expr,  pg_catalog.pg_get_partkeydef(c.oid) as partition_key FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_description d ON d.objoid=c.oid WHERE c.relnamespace=:p1 AND c.relkind not in ('i','c')";
         let out = maybe_rewrite(sql).expect("matches pg_class");
         assert!(out.contains("c.relkind::text AS relkind"));
         assert!(out.contains("c.relacl::text AS relacl"));
         assert!(out.contains("pg_catalog.pg_get_expr(c.relpartbound, c.oid) AS relpartbound"));
         assert!(out.contains("c.relnamespace=:p1::oid"));
         assert!(!out.contains("c.*"));
+        // Description and partition projections elided to dodge UTF-8 NUL.
+        assert!(!out.contains("d.description"));
+        assert!(out.contains("NULL AS partition_key"));
+        assert!(out.contains("NULL AS partition_expr"));
     }
 
     #[test]
