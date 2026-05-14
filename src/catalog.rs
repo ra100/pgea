@@ -49,6 +49,10 @@ pub fn maybe_rewrite(sql: &str) -> Option<String> {
         out = r;
         changed = true;
     }
+    if let Some(r) = rewrite_pg_am_star(&out) {
+        out = r;
+        changed = true;
+    }
     if let Some(r) = cast_oid_placeholders(&out) {
         out = r;
         changed = true;
@@ -150,6 +154,25 @@ NULL::text AS relpartbound";
         .into_owned();
 
     Some(out)
+}
+
+/// `SELECT am.oid,am.* FROM pg_catalog.pg_am am` — `am.*` exposes
+/// `amhandler` (regproc) and `amtype` (char(1)). Aurora rejects both. Cast
+/// to text via aliases.
+fn rewrite_pg_am_star(sql: &str) -> Option<String> {
+    static FROM_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\bFROM\s+(?:pg_catalog\.)?pg_am\s+(?:AS\s+)?am\b").unwrap()
+    });
+    static STAR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bam\.\*").unwrap());
+
+    if !FROM_RE.is_match(sql) || !STAR_RE.is_match(sql) {
+        return None;
+    }
+    let cols = "\
+am.amname, \
+am.amhandler::text AS amhandler, \
+am.amtype::text AS amtype";
+    Some(STAR_RE.replace(sql, cols).into_owned())
 }
 
 /// `SELECT c.* FROM pg_catalog.pg_constraint c ...` — `c.*` exposes
@@ -458,6 +481,15 @@ mod tests {
         assert!(!out.contains("d.description"));
         assert!(out.contains("NULL AS partition_key"));
         assert!(out.contains("NULL AS partition_expr"));
+    }
+
+    #[test]
+    fn rewrites_pg_am_star() {
+        let sql = "SELECT am.oid,am.* FROM pg_catalog.pg_am am ORDER BY am.oid";
+        let out = maybe_rewrite(sql).expect("matches pg_am");
+        assert!(out.contains("am.amhandler::text AS amhandler"));
+        assert!(out.contains("am.amtype::text AS amtype"));
+        assert!(!out.contains("am.*"));
     }
 
     #[test]
