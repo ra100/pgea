@@ -237,8 +237,21 @@ fn format_array_value(a: &aws_sdk_rdsdata::types::ArrayValue) -> String {
     "{}".to_string()
 }
 
-fn sdk_error<E: std::fmt::Display>(e: E) -> RdsError {
-    RdsError::Sdk(e.to_string())
+/// Convert an AWS SDK error into our flat `RdsError`. Walks the `Error::source`
+/// chain so the actual service message (e.g. `BadRequestException: relation
+/// "foo.bar" does not exist`) reaches the pg client instead of just the bare
+/// outer "service error" wrapper.
+fn sdk_error<E: std::error::Error>(e: E) -> RdsError {
+    let mut parts: Vec<String> = vec![e.to_string()];
+    let mut src: Option<&dyn std::error::Error> = e.source();
+    while let Some(s) = src {
+        parts.push(s.to_string());
+        src = s.source();
+    }
+    // Deduplicate consecutive identical messages (common in smithy chains).
+    parts.dedup();
+    let msg = parts.join(": ");
+    RdsError::Sdk(msg)
 }
 
 #[cfg(test)]
