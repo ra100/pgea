@@ -37,6 +37,18 @@ pub fn maybe_rewrite(sql: &str) -> Option<String> {
         out = r;
         changed = true;
     }
+    if let Some(r) = rewrite_pg_constraint_star(&out) {
+        out = r;
+        changed = true;
+    }
+    if let Some(r) = rewrite_pg_index_star(&out) {
+        out = r;
+        changed = true;
+    }
+    if let Some(r) = patch_pg_depend_projection(&out) {
+        out = r;
+        changed = true;
+    }
     if let Some(r) = cast_oid_placeholders(&out) {
         out = r;
         changed = true;
@@ -56,7 +68,7 @@ fn cast_oid_placeholders(sql: &str) -> Option<String> {
         // Match `<alias>.<col> = :pN` or `<col> = :pN` for a small list of
         // canonical oid-typed catalog columns.
         Regex::new(
-            r"(?i)((?:\w+\.)?(?:oid|relnamespace|relfilenode|reltype|reltoastrelid|relowner|relam|reloftype|relrewrite|typrelid|typelem|typarray|typbasetype|typnamespace|typowner|typsubscript|attrelid|atttypid|attcollation|conrelid|contypid|conindid|conparentid|confrelid|indexrelid|indrelid|conkey|confkey|inhparent|inhrelid|nspowner|adrelid|adnum|enumtypid|pronamespace|proowner|prolang|provariadic|proargdefaults|protrftypes|prorettype|proallargtypes|proargtypes|proargmodes|proargnames|prosrc|probin|proconfig|amhandler|opfmethod|opfnamespace|opfowner|opcmethod|opcnamespace|opcowner|opcfamily|opcintype|opckeytype|amopfamily|amoplefttype|amoprighttype|amopopr|amopmethod|amopsortfamily|amprocfamily|amproclefttype|amprocrighttype|amproc|conpfeqop|conppeqop|conffeqop|partrelid|partclass|partcollation|partexprs|classid|objid|refclassid|refobjid)\s*(?:=|<>|!=|<=|>=|<|>)\s*):(p\d+)\b",
+            r"(?i)((?:\w+\.)?(?:oid|relnamespace|relfilenode|reltype|reltoastrelid|relowner|relam|reloftype|relrewrite|typrelid|typelem|typarray|typbasetype|typnamespace|typowner|typsubscript|attrelid|atttypid|attcollation|conrelid|contypid|conindid|conparentid|confrelid|indexrelid|indrelid|conkey|confkey|inhparent|inhrelid|nspowner|adrelid|adnum|enumtypid|pronamespace|proowner|prolang|provariadic|proargdefaults|protrftypes|prorettype|proallargtypes|proargtypes|proargmodes|proargnames|prosrc|probin|proconfig|amhandler|opfmethod|opfnamespace|opfowner|opcmethod|opcnamespace|opcowner|opcfamily|opcintype|opckeytype|amopfamily|amoplefttype|amoprighttype|amopopr|amopmethod|amopsortfamily|amprocfamily|amproclefttype|amprocrighttype|amproc|conpfeqop|conppeqop|conffeqop|partrelid|partclass|partcollation|partexprs|classid|objid|refclassid|refobjid|tgrelid|tgfoid|ev_class|ev_qual|ev_action|tgconstrrelid|tgconstrindid|tgconstraint|evtowner)\s*(?:=|<>|!=|<=|>=|<|>)\s*):(p\d+)\b",
         )
         .unwrap()
     });
@@ -138,6 +150,81 @@ NULL::text AS relpartbound";
         .into_owned();
 
     Some(out)
+}
+
+/// `SELECT c.* FROM pg_catalog.pg_constraint c ...` — `c.*` exposes
+/// `contype`, `confupdtype`, `confdeltype`, `confmatchtype` (all char(1))
+/// plus int2/int4 array side-cars (conkey, confkey, conpfeqop, ...) which
+/// Aurora may also choke on when transmitted as binary. Cast char(1) cols
+/// to text. Leave the int arrays alone — they pass through fine.
+fn rewrite_pg_constraint_star(sql: &str) -> Option<String> {
+    static FROM_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\bFROM\s+(?:pg_catalog\.)?pg_constraint\s+(?:AS\s+)?c\b").unwrap()
+    });
+    static STAR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bc\.\*").unwrap());
+
+    if !FROM_RE.is_match(sql) || !STAR_RE.is_match(sql) {
+        return None;
+    }
+    let cols = "\
+c.conname, c.connamespace, \
+c.contype::text AS contype, \
+c.condeferrable, c.condeferred, c.convalidated, \
+c.conrelid, c.contypid, c.conindid, c.conparentid, \
+c.confrelid, \
+c.confupdtype::text AS confupdtype, \
+c.confdeltype::text AS confdeltype, \
+c.confmatchtype::text AS confmatchtype, \
+c.conislocal, c.coninhcount, c.connoinherit, \
+c.conkey, c.confkey, c.conpfeqop, c.conppeqop, c.conffeqop, c.confdelsetcols, \
+c.conexclop, NULL::text AS conbin";
+    Some(STAR_RE.replace(sql, cols).into_owned())
+}
+
+/// `SELECT i.* FROM pg_catalog.pg_index i ...` — `i.*` exposes
+/// `int2vector` columns (`indkey`) and `oidvector` (`indcollation`,
+/// `indclass`, `indoption`). Aurora rejects int2vector outright. Cast each
+/// to text so the column shape stays usable.
+fn rewrite_pg_index_star(sql: &str) -> Option<String> {
+    static FROM_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\bFROM\s+(?:pg_catalog\.)?pg_index\s+(?:AS\s+)?i\b").unwrap()
+    });
+    static STAR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bi\.\*").unwrap());
+
+    if !FROM_RE.is_match(sql) || !STAR_RE.is_match(sql) {
+        return None;
+    }
+    let cols = "\
+i.indexrelid, i.indrelid, i.indnatts, i.indnkeyatts, \
+i.indisunique, i.indnullsnotdistinct, i.indisprimary, i.indisexclusion, \
+i.indimmediate, i.indisclustered, i.indisvalid, i.indcheckxmin, \
+i.indisready, i.indislive, i.indisreplident, \
+i.indkey::text AS indkey, \
+i.indcollation::text AS indcollation, \
+i.indclass::text AS indclass, \
+i.indoption::text AS indoption, \
+NULL::text AS indexprs, NULL::text AS indpred";
+    Some(STAR_RE.replace(sql, cols).into_owned())
+}
+
+/// DBeaver's pg_depend probe selects `dep.deptype` (char(1)) and `cl.relkind`
+/// raw at the head of the projection. Aurora rejects both. Patch the exact
+/// upstream projection prefix to cast each to text — leaves the rest of the
+/// query untouched.
+fn patch_pg_depend_projection(sql: &str) -> Option<String> {
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)dep\.deptype, dep\.classid, dep\.objid, cl\.relkind,").unwrap()
+    });
+    if !RE.is_match(sql) {
+        return None;
+    }
+    Some(
+        RE.replace(
+            sql,
+            "dep.deptype::text AS deptype, dep.classid, dep.objid, cl.relkind::text AS relkind,",
+        )
+        .into_owned(),
+    )
 }
 
 /// `SELECT c.oid,c.* FROM pg_catalog.pg_collation c` — `c.*` exposes
@@ -354,6 +441,43 @@ mod tests {
         assert!(!out.contains("d.description"));
         assert!(out.contains("NULL AS partition_key"));
         assert!(out.contains("NULL AS partition_expr"));
+    }
+
+    #[test]
+    fn rewrites_pg_constraint_star() {
+        let sql = "SELECT c.oid,c.* FROM pg_catalog.pg_constraint c WHERE c.conrelid=:p1";
+        let out = maybe_rewrite(sql).expect("matches pg_constraint");
+        assert!(out.contains("c.contype::text AS contype"));
+        assert!(out.contains("c.confupdtype::text AS confupdtype"));
+        assert!(out.contains("c.confmatchtype::text AS confmatchtype"));
+        assert!(out.contains("c.conrelid=:p1::oid"));
+        assert!(!out.contains("c.*"));
+    }
+
+    #[test]
+    fn rewrites_pg_index_star() {
+        let sql = "SELECT i.*,c.relname FROM pg_catalog.pg_index i INNER JOIN pg_catalog.pg_class c ON c.oid=i.indexrelid WHERE i.indrelid=:p1";
+        let out = maybe_rewrite(sql).expect("matches pg_index");
+        assert!(out.contains("i.indkey::text AS indkey"));
+        assert!(out.contains("i.indcollation::text AS indcollation"));
+        assert!(out.contains("i.indrelid=:p1::oid"));
+        assert!(!out.contains("i.*"));
+    }
+
+    #[test]
+    fn patches_pg_depend_deptype() {
+        let sql = "SELECT DISTINCT dep.deptype, dep.classid, dep.objid, cl.relkind, attr.attname FROM pg_depend dep WHERE dep.refobjid=:p1";
+        let out = maybe_rewrite(sql).expect("matches pg_depend");
+        assert!(out.contains("dep.deptype::text AS deptype"));
+        assert!(out.contains("cl.relkind::text AS relkind,"));
+        assert!(out.contains("dep.refobjid=:p1::oid"));
+    }
+
+    #[test]
+    fn casts_oid_placeholder_for_tgrelid() {
+        let sql = "SELECT 1 FROM pg_trigger x WHERE x.tgrelid = :p1";
+        let out = maybe_rewrite(sql).expect("matches");
+        assert!(out.contains("x.tgrelid = :p1::oid"));
     }
 
     #[test]
