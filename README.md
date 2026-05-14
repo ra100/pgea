@@ -47,27 +47,41 @@ Adding any of these requires updating the spec first.
 
 ## Install
 
+From source via cargo:
+
+```sh
+cargo install --git https://github.com/svarba/pg-rds-connector
+# binary lands in ~/.cargo/bin/pg-rds-connector
+```
+
+Or build a local checkout:
+
 ```sh
 cargo build --release
 # binary lands in target/release/pg-rds-connector
 ```
+
+Prebuilt macOS (arm64 / x86_64) and Linux (x86_64) binaries are attached to
+each tagged GitHub release. Download, `chmod +x`, drop into your `PATH`.
 
 ## Configure
 
 Create `~/.config/pg-rds-connector/config.toml`:
 
 ```toml
-listen        = "127.0.0.1:15000"
+listen          = "127.0.0.1:15000"
 default_profile = "default"
 
-[[targets]]
-name        = "playground_uat"
+[targets.playground_uat]
 profile     = "uat"
 region      = "us-east-1"
 cluster_arn = "arn:aws:rds:us-east-1:123456789012:cluster:my-cluster"
 secret_arn  = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-cluster-credentials-XXXXXX"
 database    = "appdb"
 ```
+
+Targets are a map keyed by name; the section header (`[targets.<name>]`)
+sets the name. The pg `dbname` field selects the target.
 
 Validation at startup is structural only (TOML, ARN regex, duplicate names,
 listen parses). Credentials are resolved lazily on first connection so a
@@ -95,11 +109,57 @@ Or in a GUI: host `127.0.0.1`, port `15000`, database `playground_uat`, user
 anything, password either empty (uses target's `profile`) or an AWS profile
 name.
 
-For DBeaver / DataGrip:
+### DBeaver
 
-- Disable SSL (loopback, no TLS in v1).
-- Use the standard PostgreSQL JDBC driver.
-- Database = the target name from `config.toml`.
+1. New Connection → PostgreSQL.
+2. **Main** tab:
+   - Host: `127.0.0.1`
+   - Port: the `listen` port from `config.toml` (e.g. `15000`)
+   - Database: the target name (e.g. `playground_uat`)
+   - Username: any non-empty value (DBeaver requires one; the proxy
+     ignores it on loopback)
+   - Password: leave empty to use the target's `profile`, or set it to an
+     AWS profile name to override
+   - Save password locally: optional
+3. **Driver properties**: defaults are fine.
+4. **SSL** tab: `Use SSL` → off. v1 has no TLS to the client; the listener
+   is bound to loopback only.
+5. Test Connection. The proxy log should show
+   `pg startup` and the resolved profile.
+
+Schema browser, table list, columns, constraints, and indexes load
+end-to-end against Aurora. The Data API 1 MB cap still applies — wide
+`SELECT *` over large tables fails; `LIMIT` or narrower projections work.
+
+### DataGrip
+
+1. New Data Source → PostgreSQL.
+2. **General** tab:
+   - Host: `127.0.0.1`, Port: `15000`, Database: target name.
+   - User: any value. Password: empty or AWS profile name.
+   - Authentication: `User & Password`.
+3. **SSH/SSL** tab: `Use SSL` → off.
+4. Use the bundled PostgreSQL JDBC driver. Test Connection.
+
+### TablePlus
+
+1. Create connection → PostgreSQL.
+2. Host: `127.0.0.1`, Port: `15000`, Database: target name.
+3. User: any value. Password: empty or AWS profile name.
+4. SSL mode: `disable`.
+
+### Caveats specific to GUIs
+
+- The proxy rewrites a known set of `pg_catalog.*` probes that hit Data
+  API result-type restrictions (`bpchar`, `oid[]`, `regproc`, …). Your
+  own queries that touch those types will still fail; cast to `text` in
+  the SQL.
+- No multi-statement `Q` support. Batch script execution that sends
+  several statements separated by `;` in a single Simple Query message
+  errors out. Run them one at a time.
+- No `LISTEN` / `NOTIFY`, no server-side cursors, no `SAVEPOINT`. The
+  intercept layer rejects these with a clean pg `ErrorResponse` so the
+  GUI sees a normal SQL error rather than a connection drop.
 
 ## Architecture
 
@@ -155,8 +215,23 @@ The crate is structured so each pure-logic unit has its own unit tests:
 - `rds::client` — SDK wrapper + a mock for tests
 - `rds::txn` — transaction state machine
 
-E2E tests against a real cluster are gated by an env var so they don't run
-by default.
+E2E tests against a real cluster live in `tests/e2e_aurora.rs` and are
+gated behind `PG_RDS_CONNECTOR_E2E=1`. Without the gate they no-op and
+`cargo test` stays green. To run them:
+
+```sh
+PG_RDS_CONNECTOR_E2E=1 \
+  PG_RDS_CONNECTOR_E2E_CLUSTER_ARN=arn:aws:rds:us-east-1:123456789012:cluster:... \
+  PG_RDS_CONNECTOR_E2E_SECRET_ARN=arn:aws:secretsmanager:us-east-1:123456789012:secret:... \
+  PG_RDS_CONNECTOR_E2E_DATABASE=appdb \
+  PG_RDS_CONNECTOR_E2E_REGION=us-east-1 \
+  PG_RDS_CONNECTOR_E2E_PROFILE=my-sso-profile \
+  cargo test --test e2e_aurora -- --nocapture --test-threads=1
+```
+
+The smoke covers `SELECT 1`, a `BEGIN ... ROLLBACK` round-trip, and the
+`SAVEPOINT` intercept path. AWS credentials come from the standard chain;
+`PG_RDS_CONNECTOR_E2E_PROFILE` is optional.
 
 ## License
 
