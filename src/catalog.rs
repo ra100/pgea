@@ -176,8 +176,14 @@ c.confupdtype::text AS confupdtype, \
 c.confdeltype::text AS confdeltype, \
 c.confmatchtype::text AS confmatchtype, \
 c.conislocal, c.coninhcount, c.connoinherit, \
-c.conkey, c.confkey, c.conpfeqop, c.conppeqop, c.conffeqop, c.confdelsetcols, \
-c.conexclop, NULL::text AS conbin";
+c.conkey::text AS conkey, \
+c.confkey::text AS confkey, \
+c.conpfeqop::text AS conpfeqop, \
+c.conppeqop::text AS conppeqop, \
+c.conffeqop::text AS conffeqop, \
+c.confdelsetcols::text AS confdelsetcols, \
+c.conexclop::text AS conexclop, \
+NULL::text AS conbin";
     Some(STAR_RE.replace(sql, cols).into_owned())
 }
 
@@ -450,6 +456,8 @@ mod tests {
         assert!(out.contains("c.contype::text AS contype"));
         assert!(out.contains("c.confupdtype::text AS confupdtype"));
         assert!(out.contains("c.confmatchtype::text AS confmatchtype"));
+        assert!(out.contains("c.conpfeqop::text AS conpfeqop"));
+        assert!(out.contains("c.conexclop::text AS conexclop"));
         assert!(out.contains("c.conrelid=:p1::oid"));
         assert!(!out.contains("c.*"));
     }
