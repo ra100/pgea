@@ -489,8 +489,9 @@ fn response_from_output(sql: &str, out: ExecuteOutput) -> Response {
     // result set is empty — because JDBC clients expect a RowDescription on
     // any SELECT. Aurora occasionally omits columnMetadata when the planner
     // proves the query produces no rows (e.g. WHERE 1<>1); in that case we
-    // synthesise an empty schema. DML/DDL stays on the Execution path so
-    // psql shows e.g. `UPDATE 5`.
+    // synthesise a single-column placeholder schema so JDBC sees a valid
+    // RowDescription with zero rows. DML/DDL stays on the Execution path
+    // so psql shows e.g. `UPDATE 5`.
     let row_returning = matches!(
         verb,
         "SELECT" | "WITH" | "VALUES" | "TABLE" | "EXPLAIN" | "SHOW"
@@ -504,6 +505,22 @@ fn response_from_output(sql: &str, out: ExecuteOutput) -> Response {
             other => Tag::new(other).with_rows(out.rows_affected as usize),
         };
         return Response::Execution(tag);
+    }
+
+    if out.columns.is_empty() && row_returning {
+        // Empty schema would be illegal in pg wire (RowDescription must
+        // declare at least one field). Synthesise a placeholder column.
+        let schema: Arc<Vec<FieldInfo>> = Arc::new(vec![FieldInfo::new(
+            "?column?".to_string(),
+            None,
+            None,
+            Type::TEXT,
+            FieldFormat::Text,
+        )]);
+        let stream = stream::iter(std::iter::empty::<PgWireResult<_>>());
+        let mut q = QueryResponse::new(schema, stream);
+        q.set_command_tag(verb);
+        return Response::Query(q);
     }
 
     let schema: Arc<Vec<FieldInfo>> = Arc::new(
