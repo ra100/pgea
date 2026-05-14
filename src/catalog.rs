@@ -72,7 +72,11 @@ fn rewrite_pg_class_star(sql: &str) -> Option<String> {
     if !FROM_RE.is_match(sql) || !STAR_RE.is_match(sql) {
         return None;
     }
-    // Columns from pg_class (PG14+). char(1)/aclitem[]/pg_node_tree casts to text.
+    // Columns from pg_class (PG14+). char(1) / aclitem[] cast to text.
+    // pg_node_tree (relpartbound) cannot be cast to text safely — Aurora
+    // returns the internal node-tree representation which contains NUL
+    // bytes that the Data API rejects as invalid UTF-8. Substitute with
+    // pg_get_expr(...) so we still get a printable value or NULL.
     let cols = "\
 c.relname, c.relnamespace, c.reltype, c.reloftype, c.relowner, c.relam, \
 c.relfilenode, c.reltablespace, c.relpages, c.reltuples, c.relallvisible, \
@@ -85,7 +89,7 @@ c.relreplident::text AS relreplident, \
 c.relispartition, c.relrewrite, c.relfrozenxid, c.relminmxid, \
 c.relacl::text AS relacl, \
 c.reloptions::text AS reloptions, \
-c.relpartbound::text AS relpartbound";
+pg_catalog.pg_get_expr(c.relpartbound, c.oid) AS relpartbound";
     Some(STAR_RE.replace(sql, cols).into_owned())
 }
 
@@ -135,8 +139,9 @@ fn rewrite_pg_type_star(sql: &str) -> Option<String> {
     //   char(1):       typtype, typcategory, typdelim, typalign, typstorage
     //   regproc:       typinput, typoutput, typreceive, typsend, typmodin,
     //                  typmodout, typanalyze, typsubscript
-    //   pg_node_tree:  typdefaultbin
-    //   aclitem[]:     typacl  (cast to text[] then ::text for safety)
+    //   pg_node_tree:  typdefaultbin — use NULL::text instead (raw cast yields
+    //                  NUL bytes that fail UTF-8 validation on the wire)
+    //   aclitem[]:     typacl
     let cols = "\
 t.typname, t.typnamespace, t.typowner, t.typlen, t.typbyval, \
 t.typtype::text AS typtype, \
@@ -148,7 +153,7 @@ t.typreceive::text AS typreceive, t.typsend::text AS typsend, \
 t.typmodin::text AS typmodin, t.typmodout::text AS typmodout, \
 t.typanalyze::text AS typanalyze, t.typalign::text AS typalign, \
 t.typstorage::text AS typstorage, t.typnotnull, t.typbasetype, t.typtypmod, \
-t.typndims, t.typcollation, t.typdefaultbin::text AS typdefaultbin, \
+t.typndims, t.typcollation, NULL::text AS typdefaultbin, \
 t.typdefault, t.typacl::text AS typacl";
 
     let mut out: String = STAR_RE.replace(sql, cols).into_owned();
@@ -188,7 +193,7 @@ mod tests {
         assert!(out.contains("t.typmodout::text AS typmodout"));
         assert!(out.contains("t.typanalyze::text AS typanalyze"));
         assert!(out.contains("t.typsubscript::text AS typsubscript"));
-        assert!(out.contains("t.typdefaultbin::text AS typdefaultbin"));
+        assert!(out.contains("NULL::text AS typdefaultbin"));
         assert!(out.contains("t.typacl::text AS typacl"));
         assert!(!out.contains("t.*"));
         assert!(out.contains("t.oid"));
@@ -235,6 +240,7 @@ mod tests {
         let out = maybe_rewrite(sql).expect("matches pg_class");
         assert!(out.contains("c.relkind::text AS relkind"));
         assert!(out.contains("c.relacl::text AS relacl"));
+        assert!(out.contains("pg_catalog.pg_get_expr(c.relpartbound, c.oid) AS relpartbound"));
         assert!(out.contains("c.relnamespace=:p1::oid"));
         assert!(!out.contains("c.*"));
     }
