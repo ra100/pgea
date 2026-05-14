@@ -352,6 +352,46 @@ fn is_unsupported_type_error(msg: &str) -> bool {
     msg.contains("UnsupportedResultException")
 }
 
+/// Decode pg binary-format bind parameter for a curated set of scalar types
+/// to its canonical text representation. Returns `None` if we don't know how
+/// to decode the type (caller falls back).
+fn decode_binary_scalar(ty: &Type, bytes: &[u8]) -> Option<String> {
+    match *ty {
+        Type::BOOL if bytes.len() == 1 => {
+            Some(if bytes[0] == 0 { "f".into() } else { "t".into() })
+        }
+        Type::INT2 if bytes.len() == 2 => {
+            Some(i16::from_be_bytes([bytes[0], bytes[1]]).to_string())
+        }
+        Type::INT4 | Type::OID if bytes.len() == 4 => {
+            let v = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            Some(if matches!(*ty, Type::OID) {
+                v.to_string()
+            } else {
+                (v as i32).to_string()
+            })
+        }
+        Type::INT8 if bytes.len() == 8 => {
+            let arr: [u8; 8] = bytes.try_into().ok()?;
+            Some(i64::from_be_bytes(arr).to_string())
+        }
+        Type::FLOAT4 if bytes.len() == 4 => {
+            let arr: [u8; 4] = bytes.try_into().ok()?;
+            Some(f32::from_be_bytes(arr).to_string())
+        }
+        Type::FLOAT8 if bytes.len() == 8 => {
+            let arr: [u8; 8] = bytes.try_into().ok()?;
+            Some(f64::from_be_bytes(arr).to_string())
+        }
+        Type::BYTEA => Some(format!("\\x{}", encode_bytea_hex(bytes))),
+        // Text-like types: pg binary format is identical to text bytes.
+        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::UNKNOWN => {
+            std::str::from_utf8(bytes).ok().map(str::to_owned)
+        }
+        _ => None,
+    }
+}
+
 // ===== Extended Query =====
 //
 // JDBC's Extended Query flow is Parse -> Bind -> Describe(Portal) -> Execute.
@@ -366,6 +406,14 @@ fn is_unsupported_type_error(msg: &str) -> bool {
 
 impl Connection {
     /// Convert a `Portal`'s pg-encoded params into Data API SqlParameters.
+    ///
+    /// Bind parameters arrive in either text (format=0) or binary (format=1).
+    /// Drivers like the PG JDBC routinely send oid/int parameters as binary
+    /// — for OID that's a 4-byte big-endian integer whose bytes can include
+    /// 0x00. Blindly stuffing those bytes into `stringValue` produces invalid
+    /// UTF-8 / NUL on the wire and Aurora returns
+    /// `invalid byte sequence for encoding "UTF8": 0x00`. Decode binary
+    /// scalars to their text representation per parameter type.
     fn sql_parameters_from_portal(portal: &Portal<String>) -> Vec<SqlParameter> {
         portal
             .parameters
@@ -374,12 +422,7 @@ impl Connection {
             .map(|(idx, raw)| {
                 let value = match raw {
                     None => AwsField::IsNull(true),
-                    Some(bytes) => match std::str::from_utf8(bytes) {
-                        Ok(s) => AwsField::StringValue(s.to_owned()),
-                        Err(_) => AwsField::BlobValue(
-                            aws_sdk_rdsdata::primitives::Blob::new(bytes.as_ref().to_vec()),
-                        ),
-                    },
+                    Some(bytes) => Self::decode_bind_param(idx, bytes.as_ref(), portal),
                 };
                 SqlParameter::builder()
                     .name(format!("p{}", idx + 1))
@@ -387,6 +430,32 @@ impl Connection {
                     .build()
             })
             .collect()
+    }
+
+    /// Decode a single bind parameter to a Data API `Field`. Honors the
+    /// per-parameter format code (text vs binary). For binary, decodes a
+    /// curated set of scalar pg types to their canonical text form.
+    fn decode_bind_param(idx: usize, bytes: &[u8], portal: &Portal<String>) -> AwsField {
+        let is_binary = portal.parameter_format.is_binary(idx);
+        if !is_binary {
+            return match std::str::from_utf8(bytes) {
+                Ok(s) => AwsField::StringValue(s.to_owned()),
+                Err(_) => AwsField::BlobValue(
+                    aws_sdk_rdsdata::primitives::Blob::new(bytes.to_vec()),
+                ),
+            };
+        }
+
+        let pg_type = portal.statement.parameter_types.get(idx);
+        if let Some(decoded) = pg_type.and_then(|t| decode_binary_scalar(t, bytes)) {
+            return AwsField::StringValue(decoded);
+        }
+
+        // Unknown/unsupported binary type. Fall back: try UTF-8, else blob.
+        match std::str::from_utf8(bytes) {
+            Ok(s) if !s.contains('\0') => AwsField::StringValue(s.to_owned()),
+            _ => AwsField::BlobValue(aws_sdk_rdsdata::primitives::Blob::new(bytes.to_vec())),
+        }
     }
 
     /// Execute the portal's statement against the Data API and stash the
