@@ -30,7 +30,7 @@ Spec: `docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md`
 
 - [x] `cc:完了` TCP accept loop in `pg/server.rs::run` via `pgwire::tokio::process_socket`.
 - [x] `cc:完了` Startup uses pgwire's `NoopHandler` (no auth challenge — loopback only). Custom cleartext-password handler + dbname-based target routing deferred to M3-followup task below.
-- [ ] `cc:TODO` Custom `StartupHandler` resolving target from `dbname` + profile from password (currently uses first configured target as default for all connections).
+- [x] `cc:完了` Custom `StartupHandler` on `Connection` — reads `database` from StartupMessage metadata, validates against `Config::target()` (3D000 if missing), sends `AuthenticationCleartextPassword`, accepts password as profile-name override (empty → fallback chain), builds per-connection `AwsRdsClient` with resolved profile + region, stashes in `Mutex<Option<Arc<dyn RdsClient>>>` shared with `SimpleQueryHandler`. main.rs no longer pre-builds clients; SDK construction is per-connection. Test seam (`test_client`) lets unit tests inject `MockRdsClient`. 3 new tests.
 
 ### M4 — RDS client + translation
 
@@ -78,7 +78,6 @@ COPY, server-side cursors, LISTEN/NOTIFY, SAVEPOINT, prepared-statement caching,
 - main.rs wires Config → tokio runtime → server with AWS-backed factory
 
 **Halted before:**
-- M3 follow-up: custom `StartupHandler` for `dbname`-based target routing + password-as-profile-override
 - M6: Extended Query path (`Parse`/`Bind`/`Describe`/`Execute`/`Sync`) with `$N`→`:pN` + `SqlParameter` conversion
 - Integration test harness with `tokio_postgres` exercising the proxy against `MockRdsClient`
 - M7: E2E against real Aurora cluster + DBeaver smoke + release CI
