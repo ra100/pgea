@@ -12,6 +12,7 @@
 //! name and ride their credentials, so the listener address is constrained
 //! at config validation time.
 
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -50,7 +51,8 @@ use crate::types::{encode_bytea_hex, oid_for_type_name};
 use aws_sdk_rdsdata::types::{Field as AwsField, SqlParameter};
 
 /// One pg connection's session state. Shared (as `Arc<Connection>`) between
-/// the [`StartupHandler`] and [`SimpleQueryHandler`] impls of this type.
+/// the [`StartupHandler`], [`SimpleQueryHandler`], and [`ExtendedQueryHandler`]
+/// impls of this type.
 pub struct Connection {
     config: Arc<Config>,
     /// Set by `StartupHandler::on_startup` once the target and profile have
@@ -61,6 +63,11 @@ pub struct Connection {
     /// constructing an `AwsRdsClient`. Lets us drive the StartupHandler in
     /// unit tests without invoking the AWS credential chain.
     test_client: Mutex<Option<Arc<dyn RdsClient>>>,
+    /// Per-portal cache of pre-executed results. The Extended Query
+    /// `Describe(Portal)` step demands a `RowDescription` before `Execute`,
+    /// so we eagerly run the statement during Describe, cache the output,
+    /// and serve `Execute` from the cache. Keyed by portal name.
+    portal_cache: Mutex<HashMap<String, ExecuteOutput>>,
 }
 
 impl Connection {
@@ -70,6 +77,7 @@ impl Connection {
             rds: Mutex::new(None),
             txn: Mutex::new(TxnState::default()),
             test_client: Mutex::new(None),
+            portal_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -345,6 +353,129 @@ fn is_unsupported_type_error(msg: &str) -> bool {
 }
 
 // ===== Extended Query =====
+//
+// JDBC's Extended Query flow is Parse -> Bind -> Describe(Portal) -> Execute.
+// The client *requires* a real RowDescription from Describe(Portal); if it
+// gets `NoData` and then DataRows from Execute it raises
+// "Received resultset tuples, but no field structure for them".
+//
+// The Data API has no `prepare`/`describe`, so we cannot get a schema without
+// running the statement. To stay compatible we eagerly execute the statement
+// inside `do_describe_portal`, cache the result keyed by portal name, and
+// have `do_query` return the cached rows for matching portals.
+
+impl Connection {
+    /// Convert a `Portal`'s pg-encoded params into Data API SqlParameters.
+    fn sql_parameters_from_portal(portal: &Portal<String>) -> Vec<SqlParameter> {
+        portal
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(idx, raw)| {
+                let value = match raw {
+                    None => AwsField::IsNull(true),
+                    Some(bytes) => match std::str::from_utf8(bytes) {
+                        Ok(s) => AwsField::StringValue(s.to_owned()),
+                        Err(_) => AwsField::BlobValue(
+                            aws_sdk_rdsdata::primitives::Blob::new(bytes.as_ref().to_vec()),
+                        ),
+                    },
+                };
+                SqlParameter::builder()
+                    .name(format!("p{}", idx + 1))
+                    .value(value)
+                    .build()
+            })
+            .collect()
+    }
+
+    /// Execute the portal's statement against the Data API and stash the
+    /// result in `portal_cache`. No-op for txn verbs and intercepted
+    /// statements: those don't need a result-row cache. Errors are stored as
+    /// `Err` in the cache so `do_query` can replay them.
+    async fn ensure_portal_executed(&self, portal: &Portal<String>) -> PortalState {
+        let raw_sql = portal.statement.statement.as_str();
+        if raw_sql.trim().is_empty() {
+            return PortalState::Empty;
+        }
+
+        let sql = rewriter::rewrite(raw_sql).sql;
+
+        match intercept::classify(&sql) {
+            Action::Reject(op) => PortalState::Reject(op),
+            Action::Begin => PortalState::Begin,
+            Action::Commit => PortalState::Commit,
+            Action::Rollback => PortalState::Rollback,
+            Action::Execute => {
+                if self.portal_cache.lock().await.contains_key(&portal.name) {
+                    return PortalState::Executed;
+                }
+
+                let rds = match self.rds.lock().await.clone() {
+                    Some(c) => c,
+                    None => {
+                        return PortalState::Error(
+                            "internal error: no RDS client bound to this connection".to_string(),
+                        )
+                    }
+                };
+
+                let params = Self::sql_parameters_from_portal(portal);
+                let txn_id = {
+                    let s = self.txn.lock().await;
+                    if s.status() == TxnStatus::Failed {
+                        return PortalState::Error(
+                            "current transaction is aborted, commands ignored until end of transaction block".to_string(),
+                        );
+                    }
+                    s.transaction_id().map(str::to_owned)
+                };
+
+                let sql_for_log = sql.clone();
+                let sql_for_exec = match crate::catalog::maybe_rewrite(&sql) {
+                    Some(r) => {
+                        debug!(original = sql_for_log, rewritten = %r, "catalog rewrite applied");
+                        r
+                    }
+                    None => sql.clone(),
+                };
+                debug!(sql = %sql_for_exec, params = params.len(), "ExecuteStatement (extended)");
+
+                match rds
+                    .execute_statement(&sql_for_exec, params, txn_id.as_deref())
+                    .await
+                {
+                    Ok(out) => {
+                        self.portal_cache
+                            .lock()
+                            .await
+                            .insert(portal.name.clone(), out);
+                        PortalState::Executed
+                    }
+                    Err(e) => {
+                        let msg = rds_error_msg(&e);
+                        warn!(sql = %sql_for_exec, %msg, "ExecuteStatement failed");
+                        if !is_unsupported_type_error(&msg) {
+                            self.txn.lock().await.mark_failed();
+                        }
+                        PortalState::Error(msg)
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum PortalState {
+    Empty,
+    Executed,
+    Reject(&'static str),
+    Begin,
+    Commit,
+    Rollback,
+    Error(String),
+}
 
 #[async_trait]
 impl ExtendedQueryHandler for Connection {
@@ -366,77 +497,74 @@ impl ExtendedQueryHandler for Connection {
         C::Error: Debug,
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
-        let raw_sql = portal.statement.statement.as_str();
-        if raw_sql.trim().is_empty() {
-            return Ok(Response::EmptyQuery);
-        }
+        let state = self.ensure_portal_executed(portal).await;
+        let sql = rewriter::rewrite(portal.statement.statement.as_str()).sql;
 
-        let rewritten = rewriter::rewrite(raw_sql);
-        let sql = rewritten.sql;
-
-        // Convert pg-encoded parameters into Data API SqlParameters. The
-        // Data API treats stringValue as text and Aurora coerces to the
-        // target column type, so a text-only encoding works for the common
-        // cases (parameterised SELECTs from GUIs). NULLs are tagged isNull.
-        let params: Vec<SqlParameter> = portal
-            .parameters
-            .iter()
-            .enumerate()
-            .map(|(idx, raw)| {
-                let value = match raw {
-                    None => AwsField::IsNull(true),
-                    Some(bytes) => match std::str::from_utf8(bytes) {
-                        Ok(s) => AwsField::StringValue(s.to_owned()),
-                        // Binary parameters (e.g. format code 1 from prepared
-                        // statements) are forwarded as bytea blobs. Aurora can
-                        // still handle them when the target column is bytea.
-                        Err(_) => AwsField::BlobValue(
-                            aws_sdk_rdsdata::primitives::Blob::new(bytes.as_ref().to_vec()),
-                        ),
-                    },
-                };
-                SqlParameter::builder()
-                    .name(format!("p{}", idx + 1))
-                    .value(value)
-                    .build()
-            })
-            .collect();
-
-        let rds = match self.rds.lock().await.clone() {
-            Some(c) => c,
-            None => {
-                return Ok(error_response(
-                    "ERROR",
-                    "08P01",
-                    "internal error: no RDS client bound to this connection".to_string(),
-                ));
-            }
-        };
-
-        // Intercept layer applies to extended queries as well — DBeaver may
-        // send BEGIN / COMMIT through the extended path.
-        match intercept::classify(&sql) {
-            Action::Reject(op) => Ok(error_response(
+        match state {
+            PortalState::Empty => Ok(Response::EmptyQuery),
+            PortalState::Reject(op) => Ok(error_response(
                 "ERROR",
                 "0A000",
                 format!("{op} not supported by RDS Data API proxy"),
             )),
-            Action::Begin => match self.txn.lock().await.begin(&rds).await {
-                Ok(_) => Ok(Response::TransactionStart(Tag::new("BEGIN"))),
-                Err(e) => Ok(error_response("ERROR", "25001", e.to_string())),
-            },
-            Action::Commit => match self.txn.lock().await.commit(&rds).await {
-                Ok(_) => Ok(Response::TransactionEnd(Tag::new("COMMIT"))),
-                Err(e) => Ok(error_response("ERROR", "25P01", e.to_string())),
-            },
-            Action::Rollback => match self.txn.lock().await.rollback(&rds).await {
-                Ok(_) => Ok(Response::TransactionEnd(Tag::new("ROLLBACK"))),
-                Err(e) => Ok(error_response("ERROR", "25P01", e.to_string())),
-            },
-            Action::Execute => match self.run_sql(&rds, &sql, params).await {
-                Ok(r) => Ok(r),
-                Err(r) => Ok(r),
-            },
+            PortalState::Begin => {
+                let rds = match self.rds.lock().await.clone() {
+                    Some(c) => c,
+                    None => {
+                        return Ok(error_response(
+                            "ERROR",
+                            "08P01",
+                            "internal error: no RDS client bound to this connection".to_string(),
+                        ))
+                    }
+                };
+                match self.txn.lock().await.begin(&rds).await {
+                    Ok(_) => Ok(Response::TransactionStart(Tag::new("BEGIN"))),
+                    Err(e) => Ok(error_response("ERROR", "25001", e.to_string())),
+                }
+            }
+            PortalState::Commit => {
+                let rds = match self.rds.lock().await.clone() {
+                    Some(c) => c,
+                    None => {
+                        return Ok(error_response(
+                            "ERROR",
+                            "08P01",
+                            "internal error: no RDS client bound to this connection".to_string(),
+                        ))
+                    }
+                };
+                match self.txn.lock().await.commit(&rds).await {
+                    Ok(_) => Ok(Response::TransactionEnd(Tag::new("COMMIT"))),
+                    Err(e) => Ok(error_response("ERROR", "25P01", e.to_string())),
+                }
+            }
+            PortalState::Rollback => {
+                let rds = match self.rds.lock().await.clone() {
+                    Some(c) => c,
+                    None => {
+                        return Ok(error_response(
+                            "ERROR",
+                            "08P01",
+                            "internal error: no RDS client bound to this connection".to_string(),
+                        ))
+                    }
+                };
+                match self.txn.lock().await.rollback(&rds).await {
+                    Ok(_) => Ok(Response::TransactionEnd(Tag::new("ROLLBACK"))),
+                    Err(e) => Ok(error_response("ERROR", "25P01", e.to_string())),
+                }
+            }
+            PortalState::Error(msg) => Ok(error_response("ERROR", "42000", msg)),
+            PortalState::Executed => {
+                let out = self
+                    .portal_cache
+                    .lock()
+                    .await
+                    .remove(&portal.name)
+                    .unwrap_or_default();
+                Ok(response_from_output(&sql, out))
+            }
         }
     }
 
@@ -448,22 +576,34 @@ impl ExtendedQueryHandler for Connection {
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
-        // We don't dry-run the statement against the Data API. Returning
-        // no_data here produces ParameterDescription with no types and
-        // NoData, matching pg behaviour for a statement we can't introspect.
-        // Execute will produce the actual RowDescription.
+        // No prepare-time introspection on the Data API. JDBC tolerates
+        // empty here; the real schema is delivered by Describe(Portal).
         Ok(DescribeStatementResponse::new(vec![], vec![]))
     }
 
     async fn do_describe_portal<C>(
         &self,
         _client: &mut C,
-        _portal: &Portal<Self::Statement>,
+        portal: &Portal<Self::Statement>,
     ) -> PgWireResult<DescribePortalResponse>
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
-        Ok(DescribePortalResponse::new(vec![]))
+        let state = self.ensure_portal_executed(portal).await;
+        let cache = self.portal_cache.lock().await;
+        let columns = match (&state, cache.get(&portal.name)) {
+            (PortalState::Executed, Some(out)) => out
+                .columns
+                .iter()
+                .map(|c| {
+                    let oid = oid_for_type_name(&c.type_name);
+                    let pg_type = Type::from_oid(oid).unwrap_or(Type::TEXT);
+                    FieldInfo::new(c.name.clone(), None, None, pg_type, FieldFormat::Text)
+                })
+                .collect(),
+            _ => vec![],
+        };
+        Ok(DescribePortalResponse::new(columns))
     }
 }
 
