@@ -85,6 +85,8 @@ fn rewrite_pg_class_star(sql: &str) -> Option<String> {
     // relacl and reloptions occasionally contain bytes the Data API
     // refuses (we've seen 'invalid byte sequence for encoding UTF8: 0x00'
     // even after ::text casts). Substitute NULL — DBeaver tolerates it.
+    // relpartbound also: pg_get_expr over a partition bound can produce
+    // strings the Data API rejects with the same 0x00 error. NULL it too.
     let cols = "\
 c.relname, c.relnamespace, c.reltype, c.reloftype, c.relowner, c.relam, \
 c.relfilenode, c.reltablespace, c.relpages, c.reltuples, c.relallvisible, \
@@ -97,7 +99,7 @@ c.relreplident::text AS relreplident, \
 c.relispartition, c.relrewrite, c.relfrozenxid, c.relminmxid, \
 NULL::text AS relacl, \
 NULL::text AS reloptions, \
-pg_catalog.pg_get_expr(c.relpartbound, c.oid) AS relpartbound";
+NULL::text AS relpartbound";
     let mut out = STAR_RE.replace(sql, cols).into_owned();
 
     // DBeaver also projects d.description and pg_get_partkeydef(c.oid).
@@ -275,7 +277,7 @@ mod tests {
         let out = maybe_rewrite(sql).expect("matches pg_class");
         assert!(out.contains("c.relkind::text AS relkind"));
         assert!(out.contains("NULL::text AS relacl"));
-        assert!(out.contains("pg_catalog.pg_get_expr(c.relpartbound, c.oid) AS relpartbound"));
+        assert!(out.contains("NULL::text AS relpartbound"));
         assert!(out.contains("c.relnamespace=:p1::oid"));
         assert!(!out.contains("c.*"));
         // Description and partition projections elided to dodge UTF-8 NUL.
