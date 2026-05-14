@@ -63,7 +63,20 @@ t.typstorage::text AS typstorage, t.typnotnull, t.typbasetype, t.typtypmod, \
 t.typndims, t.typcollation, t.typdefaultbin::text AS typdefaultbin, \
 t.typdefault, t.typacl::text AS typacl";
 
-    Some(STAR_RE.replace(sql, cols).into_owned())
+    let mut out: String = STAR_RE.replace(sql, cols).into_owned();
+
+    // The same DBeaver query projects `c.relkind` from pg_class as a result
+    // column (char(1) — refused by Data API). The exact projection token in
+    // the upstream query is `,c.relkind,`. Replace that single occurrence;
+    // predicate uses (`c.relkind IS NULL`, `c.relkind = 'c'`) keep their
+    // unmodified `c.relkind` reference because they don't sit between commas.
+    out = out.replacen(
+        ",c.relkind,",
+        ",c.relkind::text AS relkind,",
+        1,
+    );
+
+    Some(out)
 }
 
 #[cfg(test)]
@@ -72,7 +85,7 @@ mod tests {
 
     #[test]
     fn rewrites_pg_type_star() {
-        let sql = "SELECT t.oid,t.*,c.relkind FROM pg_catalog.pg_type t LEFT JOIN pg_catalog.pg_class c ON c.oid=t.typrelid";
+        let sql = "SELECT t.oid,t.*,c.relkind,d.description FROM pg_catalog.pg_type t LEFT JOIN pg_catalog.pg_class c ON c.oid=t.typrelid LEFT JOIN pg_catalog.pg_description d ON t.oid=d.objoid";
         let out = maybe_rewrite(sql).expect("should match");
         assert!(out.contains("t.typtype::text AS typtype"));
         assert!(out.contains("t.typcategory::text AS typcategory"));
@@ -91,7 +104,18 @@ mod tests {
         assert!(out.contains("t.typacl::text AS typacl"));
         assert!(!out.contains("t.*"));
         assert!(out.contains("t.oid"));
-        assert!(out.contains("c.relkind"));
+        // Projection of c.relkind cast to text. Predicate `c.relkind = 'c'`
+        // (if present) must stay un-cast.
+        assert!(out.contains("c.relkind::text AS relkind"));
+    }
+
+    #[test]
+    fn dbeaver_query_full_rewrite_preserves_predicate_relkind() {
+        let sql = "SELECT t.oid,t.*,c.relkind,format_type(nullif(t.typbasetype, 0), t.typtypmod) as base_type_name, d.description\nFROM pg_catalog.pg_type t\nLEFT OUTER JOIN pg_catalog.pg_type et ON et.oid=t.typelem \nLEFT OUTER JOIN pg_catalog.pg_class c ON c.oid=t.typrelid\nLEFT OUTER JOIN pg_catalog.pg_description d ON t.oid=d.objoid\nWHERE t.typname IS NOT NULL\nAND (c.relkind IS NULL OR c.relkind = 'c') AND (et.typcategory IS NULL OR et.typcategory <> 'C')";
+        let out = maybe_rewrite(sql).expect("matches");
+        assert!(out.contains("c.relkind::text AS relkind"));
+        // Predicate should still read raw c.relkind.
+        assert!(out.contains("(c.relkind IS NULL OR c.relkind = 'c')"));
     }
 
     #[test]
