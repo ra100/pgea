@@ -21,10 +21,13 @@ use futures::{stream, Sink, SinkExt};
 use pgwire::api::auth::{
     self, DefaultServerParameterProvider, StartupHandler,
 };
-use pgwire::api::query::SimpleQueryHandler;
+use pgwire::api::portal::Portal;
+use pgwire::api::query::{ExtendedQueryHandler, SimpleQueryHandler};
 use pgwire::api::results::{
-    DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag,
+    DataRowEncoder, DescribePortalResponse, DescribeStatementResponse, FieldFormat, FieldInfo,
+    QueryResponse, Response, Tag,
 };
+use pgwire::api::stmt::{NoopQueryParser, StoredStatement};
 use pgwire::api::{
     ClientInfo, ClientPortalStore, PgWireConnectionState, PgWireServerHandlers, Type,
     METADATA_DATABASE,
@@ -42,7 +45,9 @@ use crate::intercept::{self, Action};
 use crate::rds::client::AwsRdsClient;
 use crate::rds::txn::{TxnState, TxnStatus};
 use crate::rds::{ExecuteOutput, Field, RdsClient, RdsError};
+use crate::rewriter;
 use crate::types::{encode_bytea_hex, oid_for_type_name};
+use aws_sdk_rdsdata::types::{Field as AwsField, SqlParameter};
 
 /// One pg connection's session state. Shared (as `Arc<Connection>`) between
 /// the [`StartupHandler`] and [`SimpleQueryHandler`] impls of this type.
@@ -101,6 +106,9 @@ pub struct ProxyHandlers {
 
 impl PgWireServerHandlers for ProxyHandlers {
     fn simple_query_handler(&self) -> Arc<impl SimpleQueryHandler> {
+        self.connection.clone()
+    }
+    fn extended_query_handler(&self) -> Arc<impl ExtendedQueryHandler> {
         self.connection.clone()
     }
     fn startup_handler(&self) -> Arc<impl StartupHandler> {
@@ -266,25 +274,168 @@ impl Connection {
         rds: &Arc<dyn RdsClient>,
         sql: &str,
     ) -> PgWireResult<Vec<Response>> {
+        match self.run_sql(rds, sql, vec![]).await {
+            Ok(resp) => Ok(vec![resp]),
+            Err(resp) => Ok(vec![resp]),
+        }
+    }
+
+    /// Run an arbitrary SQL string against the RDS Data API, threading the
+    /// per-connection transaction state. Returns either a successful pg
+    /// `Response` or an error `Response` already wrapped — the caller decides
+    /// whether to put it into a `Vec` (Simple Query) or return it directly
+    /// (Extended Query).
+    async fn run_sql(
+        &self,
+        rds: &Arc<dyn RdsClient>,
+        sql: &str,
+        parameters: Vec<SqlParameter>,
+    ) -> Result<Response, Response> {
         let txn_id = {
             let s = self.txn.lock().await;
             if s.status() == TxnStatus::Failed {
-                return Ok(vec![error_response(
+                return Err(error_response(
                     "ERROR",
                     "25P02",
                     "current transaction is aborted, commands ignored until end of transaction block".to_string(),
-                )]);
+                ));
             }
             s.transaction_id().map(str::to_owned)
         };
 
-        match rds.execute_statement(sql, vec![], txn_id.as_deref()).await {
-            Ok(out) => Ok(vec![response_from_output(sql, out)]),
+        match rds
+            .execute_statement(sql, parameters, txn_id.as_deref())
+            .await
+        {
+            Ok(out) => Ok(response_from_output(sql, out)),
             Err(e) => {
                 self.txn.lock().await.mark_failed();
-                Ok(vec![error_response("ERROR", "42000", rds_error_msg(&e))])
+                Err(error_response("ERROR", "42000", rds_error_msg(&e)))
             }
         }
+    }
+}
+
+// ===== Extended Query =====
+
+#[async_trait]
+impl ExtendedQueryHandler for Connection {
+    type Statement = String;
+    type QueryParser = NoopQueryParser;
+
+    fn query_parser(&self) -> Arc<Self::QueryParser> {
+        Arc::new(NoopQueryParser)
+    }
+
+    async fn do_query<C>(
+        &self,
+        _client: &mut C,
+        portal: &Portal<Self::Statement>,
+        _max_rows: usize,
+    ) -> PgWireResult<Response>
+    where
+        C: ClientInfo + Sink<PgWireBackendMessage> + Unpin + Send + Sync,
+        C::Error: Debug,
+        PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
+    {
+        let raw_sql = portal.statement.statement.as_str();
+        if raw_sql.trim().is_empty() {
+            return Ok(Response::EmptyQuery);
+        }
+
+        let rewritten = rewriter::rewrite(raw_sql);
+        let sql = rewritten.sql;
+
+        // Convert pg-encoded parameters into Data API SqlParameters. The
+        // Data API treats stringValue as text and Aurora coerces to the
+        // target column type, so a text-only encoding works for the common
+        // cases (parameterised SELECTs from GUIs). NULLs are tagged isNull.
+        let params: Vec<SqlParameter> = portal
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(idx, raw)| {
+                let value = match raw {
+                    None => AwsField::IsNull(true),
+                    Some(bytes) => match std::str::from_utf8(bytes) {
+                        Ok(s) => AwsField::StringValue(s.to_owned()),
+                        // Binary parameters (e.g. format code 1 from prepared
+                        // statements) are forwarded as bytea blobs. Aurora can
+                        // still handle them when the target column is bytea.
+                        Err(_) => AwsField::BlobValue(
+                            aws_sdk_rdsdata::primitives::Blob::new(bytes.as_ref().to_vec()),
+                        ),
+                    },
+                };
+                SqlParameter::builder()
+                    .name(format!("p{}", idx + 1))
+                    .value(value)
+                    .build()
+            })
+            .collect();
+
+        let rds = match self.rds.lock().await.clone() {
+            Some(c) => c,
+            None => {
+                return Ok(error_response(
+                    "ERROR",
+                    "08P01",
+                    "internal error: no RDS client bound to this connection".to_string(),
+                ));
+            }
+        };
+
+        // Intercept layer applies to extended queries as well — DBeaver may
+        // send BEGIN / COMMIT through the extended path.
+        match intercept::classify(&sql) {
+            Action::Reject(op) => Ok(error_response(
+                "ERROR",
+                "0A000",
+                format!("{op} not supported by RDS Data API proxy"),
+            )),
+            Action::Begin => match self.txn.lock().await.begin(&rds).await {
+                Ok(_) => Ok(Response::TransactionStart(Tag::new("BEGIN"))),
+                Err(e) => Ok(error_response("ERROR", "25001", e.to_string())),
+            },
+            Action::Commit => match self.txn.lock().await.commit(&rds).await {
+                Ok(_) => Ok(Response::TransactionEnd(Tag::new("COMMIT"))),
+                Err(e) => Ok(error_response("ERROR", "25P01", e.to_string())),
+            },
+            Action::Rollback => match self.txn.lock().await.rollback(&rds).await {
+                Ok(_) => Ok(Response::TransactionEnd(Tag::new("ROLLBACK"))),
+                Err(e) => Ok(error_response("ERROR", "25P01", e.to_string())),
+            },
+            Action::Execute => match self.run_sql(&rds, &sql, params).await {
+                Ok(r) => Ok(r),
+                Err(r) => Ok(r),
+            },
+        }
+    }
+
+    async fn do_describe_statement<C>(
+        &self,
+        _client: &mut C,
+        _statement: &StoredStatement<Self::Statement>,
+    ) -> PgWireResult<DescribeStatementResponse>
+    where
+        C: ClientInfo + Unpin + Send + Sync,
+    {
+        // We don't dry-run the statement against the Data API. Returning
+        // no_data here produces ParameterDescription with no types and
+        // NoData, matching pg behaviour for a statement we can't introspect.
+        // Execute will produce the actual RowDescription.
+        Ok(DescribeStatementResponse::new(vec![], vec![]))
+    }
+
+    async fn do_describe_portal<C>(
+        &self,
+        _client: &mut C,
+        _portal: &Portal<Self::Statement>,
+    ) -> PgWireResult<DescribePortalResponse>
+    where
+        C: ClientInfo + Unpin + Send + Sync,
+    {
+        Ok(DescribePortalResponse::new(vec![]))
     }
 }
 
