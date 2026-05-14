@@ -1,4 +1,4 @@
-# pg-rds-connector
+# pgea
 
 [![CI](https://github.com/svarba/pg-rds-connector/actions/workflows/ci.yml/badge.svg)](https://github.com/svarba/pg-rds-connector/actions/workflows/ci.yml)
 
@@ -17,7 +17,7 @@ Aurora clusters in private VPCs typically need either a bastion host, a VPN,
 or a VPC endpoint to reach. None of these are convenient for ad-hoc
 exploration, and most pg GUIs don't speak the RDS Data API natively.
 
-`pg-rds-connector` is a single binary that:
+`pgea` is a single binary that:
 
 - Listens on `127.0.0.1:<port>` and speaks the standard pg wire protocol.
 - Translates each query into `ExecuteStatement` (and `BeginTransaction` /
@@ -53,14 +53,14 @@ From source via cargo:
 
 ```sh
 cargo install --git https://github.com/svarba/pg-rds-connector
-# binary lands in ~/.cargo/bin/pg-rds-connector
+# binary lands in ~/.cargo/bin/pgea
 ```
 
 Or build a local checkout:
 
 ```sh
 cargo build --release
-# binary lands in target/release/pg-rds-connector
+# binary lands in target/release/pgea
 ```
 
 Prebuilt macOS (arm64 / x86_64) and Linux (x86_64) binaries are attached to
@@ -93,9 +93,9 @@ fresh one.
 ## Run
 
 ```sh
-./target/release/pg-rds-connector
+./target/release/pgea
 # or with a custom config / listen address
-./target/release/pg-rds-connector --config ./config.toml --listen 127.0.0.1:15000
+./target/release/pgea --config ./config.toml --listen 127.0.0.1:15000
 ```
 
 Logs at `info` cover connection events, target resolution, profile used, and
