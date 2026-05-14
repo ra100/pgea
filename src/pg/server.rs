@@ -291,6 +291,19 @@ impl Connection {
         sql: &str,
         parameters: Vec<SqlParameter>,
     ) -> Result<Response, Response> {
+        // Apply catalog rewrites for queries known to trip
+        // RDS Data API's UnsupportedResultException (CHAR / TIME / INTERVAL
+        // columns in catalog reads). Falls back to the input on no match.
+        let rewritten;
+        let sql = match crate::catalog::maybe_rewrite(sql) {
+            Some(r) => {
+                tracing::debug!(original = sql, rewritten = %r, "catalog rewrite applied");
+                rewritten = r;
+                rewritten.as_str()
+            }
+            None => sql,
+        };
+        tracing::debug!(sql, params = parameters.len(), "ExecuteStatement");
         let txn_id = {
             let s = self.txn.lock().await;
             if s.status() == TxnStatus::Failed {
@@ -309,11 +322,26 @@ impl Connection {
         {
             Ok(out) => Ok(response_from_output(sql, out)),
             Err(e) => {
+                let msg = rds_error_msg(&e);
+                tracing::warn!(sql, %msg, "ExecuteStatement failed");
+                // Aurora's Data API refuses to return values of certain
+                // PG types (CHAR/bpchar, TIME, INTERVAL, etc) with
+                // UnsupportedResultException. GUI clients fail on connect
+                // because their catalog probes hit these types. Surface a
+                // pg ErrorResponse that does NOT abort the transaction so
+                // the client can keep going with the next probe.
+                if is_unsupported_type_error(&msg) {
+                    return Err(error_response("ERROR", "0A000", msg));
+                }
                 self.txn.lock().await.mark_failed();
-                Err(error_response("ERROR", "42000", rds_error_msg(&e)))
+                Err(error_response("ERROR", "42000", msg))
             }
         }
     }
+}
+
+fn is_unsupported_type_error(msg: &str) -> bool {
+    msg.contains("UnsupportedResultException")
 }
 
 // ===== Extended Query =====
