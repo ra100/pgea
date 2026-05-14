@@ -42,11 +42,13 @@ fn rewrite_pg_type_star(sql: &str) -> Option<String> {
     // Explicit column list for pg_type. Casts the four CHAR(1) columns to
     // text. Order matches `pg_type` (PG 14+) but ordering is not load-bearing
     // — DBeaver indexes columns by name from the result metadata.
-    // RDS Data API refuses to return both char(1) AND regproc-typed columns.
-    // Cast every offender in pg_type:
-    //   char(1):  typtype, typcategory, typdelim, typalign, typstorage
-    //   regproc:  typinput, typoutput, typreceive, typsend, typmodin,
-    //             typmodout, typanalyze, typsubscript
+    // RDS Data API refuses several Postgres types in result rows. Cast every
+    // offender in pg_type:
+    //   char(1):       typtype, typcategory, typdelim, typalign, typstorage
+    //   regproc:       typinput, typoutput, typreceive, typsend, typmodin,
+    //                  typmodout, typanalyze, typsubscript
+    //   pg_node_tree:  typdefaultbin
+    //   aclitem[]:     typacl  (cast to text[] then ::text for safety)
     let cols = "\
 t.typname, t.typnamespace, t.typowner, t.typlen, t.typbyval, \
 t.typtype::text AS typtype, \
@@ -58,7 +60,8 @@ t.typreceive::text AS typreceive, t.typsend::text AS typsend, \
 t.typmodin::text AS typmodin, t.typmodout::text AS typmodout, \
 t.typanalyze::text AS typanalyze, t.typalign::text AS typalign, \
 t.typstorage::text AS typstorage, t.typnotnull, t.typbasetype, t.typtypmod, \
-t.typndims, t.typcollation, t.typdefaultbin, t.typdefault, t.typacl";
+t.typndims, t.typcollation, t.typdefaultbin::text AS typdefaultbin, \
+t.typdefault, t.typacl::text AS typacl";
 
     Some(STAR_RE.replace(sql, cols).into_owned())
 }
@@ -84,6 +87,8 @@ mod tests {
         assert!(out.contains("t.typmodout::text AS typmodout"));
         assert!(out.contains("t.typanalyze::text AS typanalyze"));
         assert!(out.contains("t.typsubscript::text AS typsubscript"));
+        assert!(out.contains("t.typdefaultbin::text AS typdefaultbin"));
+        assert!(out.contains("t.typacl::text AS typacl"));
         assert!(!out.contains("t.*"));
         assert!(out.contains("t.oid"));
         assert!(out.contains("c.relkind"));
