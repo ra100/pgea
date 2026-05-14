@@ -483,8 +483,20 @@ fn error_response(severity: &str, code: &str, msg: String) -> Response {
 
 /// Build pg `Response::Query` from an `ExecuteOutput`. Always emits text format.
 fn response_from_output(sql: &str, out: ExecuteOutput) -> Response {
-    if out.columns.is_empty() {
-        let verb = intercept::leading_verb(sql).unwrap_or("OK");
+    let verb = intercept::leading_verb(sql).unwrap_or("OK");
+
+    // For row-returning verbs we MUST emit Response::Query — even when the
+    // result set is empty — because JDBC clients expect a RowDescription on
+    // any SELECT. Aurora occasionally omits columnMetadata when the planner
+    // proves the query produces no rows (e.g. WHERE 1<>1); in that case we
+    // synthesise an empty schema. DML/DDL stays on the Execution path so
+    // psql shows e.g. `UPDATE 5`.
+    let row_returning = matches!(
+        verb,
+        "SELECT" | "WITH" | "VALUES" | "TABLE" | "EXPLAIN" | "SHOW"
+    );
+
+    if out.columns.is_empty() && !row_returning {
         let tag = match verb {
             "INSERT" => Tag::new("INSERT")
                 .with_oid(0)
@@ -521,7 +533,6 @@ fn response_from_output(sql: &str, out: ExecuteOutput) -> Response {
 
     let stream = stream::iter(row_iter);
     let mut q = QueryResponse::new(schema, stream);
-    let verb = intercept::leading_verb(sql).unwrap_or("SELECT");
     q.set_command_tag(verb);
     Response::Query(q)
 }
