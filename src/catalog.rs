@@ -29,6 +29,10 @@ pub fn maybe_rewrite(sql: &str) -> Option<String> {
         out = r;
         changed = true;
     }
+    if let Some(r) = rewrite_pg_attribute_star(&out) {
+        out = r;
+        changed = true;
+    }
     if let Some(r) = cast_oid_placeholders(&out) {
         out = r;
         changed = true;
@@ -130,6 +134,36 @@ NULL::text AS relpartbound";
         .into_owned();
 
     Some(out)
+}
+
+/// DBeaver column-listing query selects `a.*` from `pg_attribute a`.
+/// `attidentity`, `attgenerated`, `attstorage`, `attalign` are char(1) — refused
+/// by Aurora Data API. `attacl` is aclitem[]. Cast char(1) to text and NULL
+/// out attacl. Other columns left untouched.
+fn rewrite_pg_attribute_star(sql: &str) -> Option<String> {
+    static FROM_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\bFROM\s+(?:pg_catalog\.)?pg_attribute\s+(?:AS\s+)?a\b").unwrap()
+    });
+    static STAR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\ba\.\*").unwrap());
+
+    if !FROM_RE.is_match(sql) || !STAR_RE.is_match(sql) {
+        return None;
+    }
+    // pg_attribute columns (PG14+). Char(1)/aclitem[] cast or NULLed.
+    // attmissingval is anyarray (also rejected); NULL it.
+    let cols = "\
+a.attrelid, a.attname, a.atttypid, a.attstattarget, a.attlen, a.attnum, \
+a.attndims, a.attcacheoff, a.atttypmod, a.attbyval, \
+a.attalign::text AS attalign, \
+a.attstorage::text AS attstorage, \
+a.attcompression::text AS attcompression, \
+a.attnotnull, a.atthasdef, a.atthasmissing, \
+a.attidentity::text AS attidentity, \
+a.attgenerated::text AS attgenerated, \
+a.attisdropped, a.attislocal, a.attinhcount, a.attcollation, \
+NULL::text AS attacl, NULL::text AS attoptions, NULL::text AS attfdwoptions, \
+NULL::text AS attmissingval";
+    Some(STAR_RE.replace(sql, cols).into_owned())
 }
 
 /// DBeaver schema browser fires
@@ -293,6 +327,20 @@ mod tests {
         assert!(!out.contains("d.description"));
         assert!(out.contains("NULL AS partition_key"));
         assert!(out.contains("NULL AS partition_expr"));
+    }
+
+    #[test]
+    fn rewrites_pg_attribute_star() {
+        let sql = "SELECT c.relname,a.*,pg_catalog.pg_get_expr(ad.adbin, ad.adrelid, true) as def_value FROM pg_catalog.pg_attribute a INNER JOIN pg_catalog.pg_class c ON (a.attrelid=c.oid) WHERE c.oid=:p1";
+        let out = maybe_rewrite(sql).expect("matches pg_attribute");
+        assert!(out.contains("a.attidentity::text AS attidentity"));
+        assert!(out.contains("a.attgenerated::text AS attgenerated"));
+        assert!(out.contains("a.attstorage::text AS attstorage"));
+        assert!(out.contains("a.attalign::text AS attalign"));
+        assert!(out.contains("NULL::text AS attacl"));
+        assert!(out.contains("NULL::text AS attmissingval"));
+        assert!(!out.contains("a.*"));
+        assert!(out.contains("c.oid=:p1::oid"));
     }
 
     #[test]
