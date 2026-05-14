@@ -1,11 +1,15 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::Parser;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-use pg_rds_connector::config::Config;
+use pg_rds_connector::config::{Config, Target};
+use pg_rds_connector::pg::server;
+use pg_rds_connector::rds::client::AwsRdsClient;
+use pg_rds_connector::rds::RdsClient;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -63,7 +67,44 @@ fn main() -> ExitCode {
         "config loaded"
     );
 
-    info!("server bootstrap not yet implemented; exiting");
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(r) => r,
+        Err(e) => {
+            error!(%e, "failed to start tokio runtime");
+            return ExitCode::from(1);
+        }
+    };
+
+    let result = runtime.block_on(async move {
+        server::run(config, |target: &Target| {
+            // Build a fresh AWS SDK client per pg connection so credential
+            // refresh and per-target profile isolation work as intended.
+            let target = target.clone();
+            let aws_config = futures::executor::block_on(async {
+                let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
+                    .region(aws_config::Region::new(target.region.clone()));
+                if let Some(profile) = target.profile.clone() {
+                    loader = loader.profile_name(profile);
+                }
+                loader.load().await
+            });
+            let sdk = aws_sdk_rdsdata::Client::new(&aws_config);
+            let client = AwsRdsClient::new(
+                sdk,
+                target.cluster_arn.clone(),
+                target.secret_arn.clone(),
+                target.database.clone(),
+            );
+            Arc::new(client) as Arc<dyn RdsClient>
+        })
+        .await
+    });
+
+    if let Err(e) = result {
+        error!(%e, "server exited with error");
+        return ExitCode::from(1);
+    }
+
     ExitCode::SUCCESS
 }
 

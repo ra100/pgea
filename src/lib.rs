@@ -5,5 +5,7 @@
 
 pub mod config;
 pub mod intercept;
+pub mod pg;
+pub mod rds;
 pub mod rewriter;
 pub mod types;

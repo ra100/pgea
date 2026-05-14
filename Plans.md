@@ -28,24 +28,24 @@ Spec: `docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md`
 
 ### M3 — Pg wire scaffold
 
-- [ ] `cc:TODO` TCP accept loop (`server.rs`) — bind `127.0.0.1:5433`, spawn per-conn task.
-- [ ] `cc:TODO` `pg::startup` — handle StartupMessage, cleartext-password auth, send `AuthenticationOk` + `ParameterStatus` + `BackendKeyData` + `ReadyForQuery`.
-- [ ] `cc:TODO` Resolve target from `dbname`; resolve profile from password (or fall back to target/default).
+- [x] `cc:完了` TCP accept loop in `pg/server.rs::run` via `pgwire::tokio::process_socket`.
+- [x] `cc:完了` Startup uses pgwire's `NoopHandler` (no auth challenge — loopback only). Custom cleartext-password handler + dbname-based target routing deferred to M3-followup task below.
+- [ ] `cc:TODO` Custom `StartupHandler` resolving target from `dbname` + profile from password (currently uses first configured target as default for all connections).
 
 ### M4 — RDS client + translation
 
-- [ ] `cc:TODO` `rds::client` — build `aws_sdk_rdsdata::Client` per profile.
-- [ ] `cc:TODO` `rds::txn` — `BeginTransaction` / `CommitTransaction` / `RollbackTransaction` wrappers.
+- [x] `cc:完了` `rds::client` — `RdsClient` trait + `AwsRdsClient` SDK impl + `MockRdsClient` test double; flattens Data API `Field` into our enum, converts `ArrayValue` → pg array literal.
+- [x] `cc:完了` `rds::txn` — `TxnState` with `begin/commit/rollback`, failed-state tracking, 5 unit tests.
 - [x] `cc:完了` `types.rs` — typeName→OID match (used `match` not `phf` — simpler, equivalent perf for ~40 entries); pg array literal encoder + bytea hex encoder. 6 unit tests.
 - [x] `cc:完了` Unit tests: type map, value formatter, array literal edge cases.
 
 ### M5 — Simple Query path
 
 - [x] `cc:完了` `intercept.rs` — regex-based rejection (SAVEPOINT/COPY/CURSOR/LISTEN/NOTIFY/FETCH/MOVE) + txn verb classification + `leading_verb()` helper. 9 unit tests.
-- [ ] `cc:TODO` `pg::simple_query` — handle `Q`: route txn verbs vs `ExecuteStatement`.
-- [ ] `cc:TODO` Response translation: `RowDescription` + `DataRow`s + `CommandComplete` (verb-tagged) + `ReadyForQuery`.
-- [ ] `cc:TODO` Error mapping: Data API errors → pg `ErrorResponse`; in-txn error → `E` state.
-- [ ] `cc:TODO` Integration test (mocked SDK): `SELECT 1`, error path, `BEGIN; SELECT 1; COMMIT`.
+- [x] `cc:完了` `pg::server::Session::do_query` — routes via intercept module to BeginTransaction/Execute/Commit/Rollback through `RdsClient`.
+- [x] `cc:完了` Response translation via pgwire `QueryResponse` + `DataRowEncoder`; verb-tagged `CommandComplete` (SELECT N / INSERT 0 N / UPDATE N / DELETE N).
+- [x] `cc:完了` Error mapping: Data API errors → pg `Response::Error(ErrorInfo)`; in-txn error sets `TxnState::failed` → status `E`; aborted-txn statements rejected with 25P02.
+- [ ] `cc:TODO` Integration test (mocked SDK + `tokio_postgres` client) — needs adding `tokio-postgres` dev-dep + spawning local listener; deferred.
 
 ### M6 — Extended Query path
 
@@ -66,11 +66,24 @@ COPY, server-side cursors, LISTEN/NOTIFY, SAVEPOINT, prepared-statement caching,
 
 ## Status (2026-05-14)
 
-**Shipped:** Cargo crate, CLI bootstrap, config loader+validator, intercept layer, type map, value formatters, $N→:pN rewriter. **35 unit tests pass, clippy clean.**
+**Shipped (40 unit tests pass, clippy clean):**
+- Cargo crate, CLI bootstrap, tokio runtime
+- Config loader + structural validation + lazy profile resolution
+- Intercept layer (rejection + txn verb classification + leading-verb helper)
+- Type map (typeName → pg OID), pg array literal encoder, bytea hex encoder
+- `$N` → `:pN` rewriter (string/identifier/comment/dollar-quote aware)
+- `RdsClient` trait + `AwsRdsClient` (real SDK) + `MockRdsClient` (tests)
+- `TxnState` state machine (begin/commit/rollback/failed)
+- pg wire server (`pg::server::run`) — Simple Query path with txn routing, error mapping, response translation
+- main.rs wires Config → tokio runtime → server with AWS-backed factory
 
-**Halted before:** pgwire wire codec, AWS SDK integration, server accept loop, transaction state machine, response translation, end-to-end integration.
+**Halted before:**
+- M3 follow-up: custom `StartupHandler` for `dbname`-based target routing + password-as-profile-override
+- M6: Extended Query path (`Parse`/`Bind`/`Describe`/`Execute`/`Sync`) with `$N`→`:pN` + `SqlParameter` conversion
+- Integration test harness with `tokio_postgres` exercising the proxy against `MockRdsClient`
+- M7: E2E against real Aurora cluster + DBeaver smoke + release CI
 
-**Why halted:** Requires verified API surface for `pgwire` and `aws-sdk-rdsdata` crates. context7 was unavailable when checked. Continuing without docs would mean guessing API signatures and shipping non-compiling code. Resume with: `cargo doc --open` of those crates, or context7 lookup, before writing M3/M4.
+**Verified by:** `cargo build` succeeds for full crate; `cargo test` passes 40 unit tests; `cargo clippy --all-targets -- -D warnings` clean.
 
 ## Archive
 
