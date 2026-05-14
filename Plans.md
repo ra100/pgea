@@ -50,9 +50,9 @@ Spec: `docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md`
 ### M6 — Extended Query path
 
 - [x] `cc:完了` Param rewriter `$N` → `:pN` lexer in `rewriter.rs` (skips single-quoted strings, double-quoted identifiers, `--` line comments, nested `/* */` block comments, dollar-quoted blocks with named & empty tags). 13 unit tests covering edge cases incl. unterminated literals.
-- [ ] `cc:TODO` `pg::extended` — handle Parse / Bind / Describe / Execute / Sync; portal & statement maps per session.
-- [ ] `cc:TODO` Param value decode (pg text/binary by OID) → Data API `SqlParameter` (`stringValue`/`longValue`/`doubleValue`/`booleanValue`/`isNull`/`blobValue`).
-- [ ] `cc:TODO` Integration test (mocked SDK): parameterised query via `tokio_postgres`.
+- [x] `cc:完了` `ExtendedQueryHandler for Connection` — Parse stores SQL via pgwire's `NoopQueryParser`; Bind builds `Portal` with parameter format codes; Describe(Portal) eagerly executes statement and caches `ExecuteOutput`; Execute serves rows from cache; Describe(Statement) reports parameter type list (echoes Parse type_oids, falls back to `Type::UNKNOWN` × placeholder count via `rewriter::rewrite`).
+- [x] `cc:完了` Param value decode (text + binary by `parameter_format`/`Type`) → Data API `SqlParameter`. Text: UTF-8 → `stringValue`, else `blobValue`. Binary: `decode_binary_scalar` handles BOOL/INT2/INT4/INT8/OID/FLOAT4/FLOAT8/BYTEA + text-like fallback. Fixes JDBC OID 4-byte BE leak that produced `invalid byte sequence for encoding "UTF8": 0x00` on real Aurora.
+- [x] `cc:完了` Integration test in `tests/extended_query.rs::extended_query_rewrites_params` — `prepare_typed("INSERT ... ($1)", &[INT4])` round-trip asserts SQL got `$1` → `:p1` rewritten and the recorded `SqlParameter` is named `p1`.
 
 ### M7 — E2E + ops
 
@@ -66,7 +66,7 @@ COPY, server-side cursors, LISTEN/NOTIFY, SAVEPOINT, prepared-statement caching,
 
 ## Status (2026-05-14)
 
-**Shipped (40 unit tests pass, clippy clean):**
+**Shipped (60 unit + 4 integration tests pass, clippy clean):**
 - Cargo crate, CLI bootstrap, tokio runtime
 - Config loader + structural validation + lazy profile resolution
 - Intercept layer (rejection + txn verb classification + leading-verb helper)
@@ -74,15 +74,17 @@ COPY, server-side cursors, LISTEN/NOTIFY, SAVEPOINT, prepared-statement caching,
 - `$N` → `:pN` rewriter (string/identifier/comment/dollar-quote aware)
 - `RdsClient` trait + `AwsRdsClient` (real SDK) + `MockRdsClient` (tests)
 - `TxnState` state machine (begin/commit/rollback/failed)
-- pg wire server (`pg::server::run`) — Simple Query path with txn routing, error mapping, response translation
+- pg wire server (`pg::server::run`) — Simple + Extended Query with txn routing, error mapping, response translation
+- Extended Query: Parse / Bind / Describe(Statement) / Describe(Portal) / Execute / Sync; eager-execute portal cache; binary bind-param decode (BOOL/INT2/INT4/INT8/OID/FLOAT4/FLOAT8/BYTEA)
+- DBeaver / DataGrip catalog rewrites (`catalog.rs`): pg_type, pg_namespace, pg_class, pg_attribute, pg_constraint, pg_index, pg_collation, pg_am, pg_depend; oid-placeholder type-cast injection; rewriter test count 17
+- Integration test harness: `tests/extended_query.rs` drives the proxy via `tokio-postgres` with a mock `RdsClient`
 - main.rs wires Config → tokio runtime → server with AWS-backed factory
+- README + MIT LICENSE; Cargo metadata (license/readme/repository) populated
 
 **Halted before:**
-- M6: Extended Query path (`Parse`/`Bind`/`Describe`/`Execute`/`Sync`) with `$N`→`:pN` + `SqlParameter` conversion
-- Integration test harness with `tokio_postgres` exercising the proxy against `MockRdsClient`
-- M7: E2E against real Aurora cluster + DBeaver smoke + release CI
+- M7: E2E against real Aurora cluster (env-gated) + DBeaver smoke automation + release CI (cargo install instructions, GH Actions prebuilt macOS/Linux binaries)
 
-**Verified by:** `cargo build` succeeds for full crate; `cargo test` passes 40 unit tests; `cargo clippy --all-targets -- -D warnings` clean.
+**Verified by:** `cargo build --release` succeeds; `cargo test` passes 60 unit + 4 integration tests; `cargo clippy --all-targets -- -D warnings` clean. Manually validated against a private Aurora cluster — DBeaver schema browser, table list, column list, constraints, indexes load end-to-end.
 
 ## Archive
 
