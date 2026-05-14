@@ -42,16 +42,21 @@ fn rewrite_pg_type_star(sql: &str) -> Option<String> {
     // Explicit column list for pg_type. Casts the four CHAR(1) columns to
     // text. Order matches `pg_type` (PG 14+) but ordering is not load-bearing
     // — DBeaver indexes columns by name from the result metadata.
-    // Every char(1) column in pg_type must be cast: typtype, typcategory,
-    // typdelim, typalign, typstorage. Missing one resurrects the
-    // UnsupportedResultException.
+    // RDS Data API refuses to return both char(1) AND regproc-typed columns.
+    // Cast every offender in pg_type:
+    //   char(1):  typtype, typcategory, typdelim, typalign, typstorage
+    //   regproc:  typinput, typoutput, typreceive, typsend, typmodin,
+    //             typmodout, typanalyze, typsubscript
     let cols = "\
 t.typname, t.typnamespace, t.typowner, t.typlen, t.typbyval, \
 t.typtype::text AS typtype, \
 t.typcategory::text AS typcategory, t.typispreferred, t.typisdefined, \
-t.typdelim::text AS typdelim, t.typrelid, t.typsubscript, t.typelem, \
-t.typarray, t.typinput, t.typoutput, t.typreceive, t.typsend, t.typmodin, \
-t.typmodout, t.typanalyze, t.typalign::text AS typalign, \
+t.typdelim::text AS typdelim, t.typrelid, \
+t.typsubscript::text AS typsubscript, t.typelem, t.typarray, \
+t.typinput::text AS typinput, t.typoutput::text AS typoutput, \
+t.typreceive::text AS typreceive, t.typsend::text AS typsend, \
+t.typmodin::text AS typmodin, t.typmodout::text AS typmodout, \
+t.typanalyze::text AS typanalyze, t.typalign::text AS typalign, \
 t.typstorage::text AS typstorage, t.typnotnull, t.typbasetype, t.typtypmod, \
 t.typndims, t.typcollation, t.typdefaultbin, t.typdefault, t.typacl";
 
@@ -71,6 +76,14 @@ mod tests {
         assert!(out.contains("t.typdelim::text AS typdelim"));
         assert!(out.contains("t.typalign::text AS typalign"));
         assert!(out.contains("t.typstorage::text AS typstorage"));
+        assert!(out.contains("t.typinput::text AS typinput"));
+        assert!(out.contains("t.typoutput::text AS typoutput"));
+        assert!(out.contains("t.typreceive::text AS typreceive"));
+        assert!(out.contains("t.typsend::text AS typsend"));
+        assert!(out.contains("t.typmodin::text AS typmodin"));
+        assert!(out.contains("t.typmodout::text AS typmodout"));
+        assert!(out.contains("t.typanalyze::text AS typanalyze"));
+        assert!(out.contains("t.typsubscript::text AS typsubscript"));
         assert!(!out.contains("t.*"));
         assert!(out.contains("t.oid"));
         assert!(out.contains("c.relkind"));
