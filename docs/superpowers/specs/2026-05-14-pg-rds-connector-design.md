@@ -222,31 +222,31 @@ Inside a transaction, an error sets txn status to `E`; the client must `ROLLBACK
 
 Static `phf` map from `columnMetadata.typeName` to pg OID:
 
-| typeName | pg OID | pg name |
-|---|---|---|
-| `bool` | 16 | bool |
-| `bytea` | 17 | bytea |
-| `int2` / `smallint` | 21 | int2 |
-| `int4` / `integer` | 23 | int4 |
-| `int8` / `bigint` | 20 | int8 |
-| `float4` / `real` | 700 | float4 |
-| `float8` / `double precision` | 701 | float8 |
-| `numeric` / `decimal` | 1700 | numeric |
-| `text` | 25 | text |
-| `varchar` | 1043 | varchar |
-| `bpchar` / `char` | 1042 | bpchar |
-| `name` | 19 | name |
-| `uuid` | 2950 | uuid |
-| `json` | 114 | json |
-| `jsonb` | 3802 | jsonb |
-| `date` | 1082 | date |
-| `time` | 1083 | time |
-| `timestamp` | 1114 | timestamp |
-| `timestamptz` | 1184 | timestamptz |
-| `interval` | 1186 | interval |
-| `_text` | 1009 | text[] |
-| `_int4` | 1007 | int4[] |
-| (unknown) | 25 | text (fallback, logged at warn) |
+| typeName                      | pg OID | pg name                         |
+| ----------------------------- | ------ | ------------------------------- |
+| `bool`                        | 16     | bool                            |
+| `bytea`                       | 17     | bytea                           |
+| `int2` / `smallint`           | 21     | int2                            |
+| `int4` / `integer`            | 23     | int4                            |
+| `int8` / `bigint`             | 20     | int8                            |
+| `float4` / `real`             | 700    | float4                          |
+| `float8` / `double precision` | 701    | float8                          |
+| `numeric` / `decimal`         | 1700   | numeric                         |
+| `text`                        | 25     | text                            |
+| `varchar`                     | 1043   | varchar                         |
+| `bpchar` / `char`             | 1042   | bpchar                          |
+| `name`                        | 19     | name                            |
+| `uuid`                        | 2950   | uuid                            |
+| `json`                        | 114    | json                            |
+| `jsonb`                       | 3802   | jsonb                           |
+| `date`                        | 1082   | date                            |
+| `time`                        | 1083   | time                            |
+| `timestamp`                   | 1114   | timestamp                       |
+| `timestamptz`                 | 1184   | timestamptz                     |
+| `interval`                    | 1186   | interval                        |
+| `_text`                       | 1009   | text[]                          |
+| `_int4`                       | 1007   | int4[]                          |
+| (unknown)                     | 25     | text (fallback, logged at warn) |
 
 All values sent in pg text format (format code 0).
 
