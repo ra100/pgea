@@ -151,12 +151,15 @@ fn rewrite_pg_collation_star(sql: &str) -> Option<String> {
     if !FROM_RE.is_match(sql) || !STAR_RE.is_match(sql) {
         return None;
     }
-    // pg_collation columns (PG14+). collprovider char(1) → text.
+    // pg_collation columns. collprovider char(1) → text.
+    // colliculocale (PG15+) and collicurules (PG16+) are version-gated;
+    // omit so the projection works against PG14/15 Auroras. DBeaver doesn't
+    // require either field for the basic collation list.
     let cols = "\
 c.collname, c.collnamespace, c.collowner, \
 c.collprovider::text AS collprovider, \
 c.collisdeterministic, c.collencoding, c.collcollate, c.collctype, \
-c.colliculocale, c.collicurules, c.collversion";
+c.collversion";
     Some(STAR_RE.replace(sql, cols).into_owned())
 }
 
