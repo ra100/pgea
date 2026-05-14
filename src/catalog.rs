@@ -14,13 +14,79 @@ use regex::Regex;
 /// Returns the rewritten SQL when a rule matches; returns `None` for
 /// SQL we don't touch.
 pub fn maybe_rewrite(sql: &str) -> Option<String> {
-    if let Some(out) = rewrite_pg_type_star(sql) {
-        return Some(out);
+    let mut out = sql.to_string();
+    let mut changed = false;
+
+    if let Some(r) = rewrite_pg_type_star(&out) {
+        out = r;
+        changed = true;
     }
-    if let Some(out) = rewrite_pg_namespace_star(sql) {
-        return Some(out);
+    if let Some(r) = rewrite_pg_namespace_star(&out) {
+        out = r;
+        changed = true;
     }
-    None
+    if let Some(r) = rewrite_pg_class_star(&out) {
+        out = r;
+        changed = true;
+    }
+    if let Some(r) = cast_oid_placeholders(&out) {
+        out = r;
+        changed = true;
+    }
+
+    if changed { Some(out) } else { None }
+}
+
+/// We pass every Extended Query parameter as `stringValue` (text), which
+/// breaks pg comparisons against `oid` columns: `oid = text` has no
+/// implicit operator. For known oid columns (qualified or bare), append a
+/// `::oid` cast to a placeholder reference of the form `<col> = :pN` /
+/// `<col> = $N`. Conservative — only the columns we've seen GUI clients
+/// use are listed.
+fn cast_oid_placeholders(sql: &str) -> Option<String> {
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        // Match `<alias>.<col> = :pN` or `<col> = :pN` for a small list of
+        // canonical oid-typed catalog columns.
+        Regex::new(
+            r"(?i)((?:\w+\.)?(?:relnamespace|relfilenode|reltype|reltoastrelid|relowner|relam|reloftype|relrewrite|typrelid|typelem|typarray|typbasetype|typnamespace|typowner|typsubscript|attrelid|atttypid|attcollation|conrelid|contypid|conindid|conparentid|confrelid|indexrelid|indrelid|conkey|confkey|inhparent|inhrelid|nspowner|adrelid|adnum|enumtypid|pronamespace|proowner|prolang|provariadic|proargdefaults|protrftypes|prorettype|proallargtypes|proargtypes|proargmodes|proargnames|prosrc|probin|proconfig|amhandler|opfmethod|opfnamespace|opfowner|opcmethod|opcnamespace|opcowner|opcfamily|opcintype|opckeytype|amopfamily|amoplefttype|amoprighttype|amopopr|amopmethod|amopsortfamily|amprocfamily|amproclefttype|amprocrighttype|amproc|conpfeqop|conppeqop|conffeqop|partrelid|partclass|partcollation|partexprs|classid|objid|refclassid|refobjid)\s*(?:=|<>|!=|<=|>=|<|>)\s*):(p\d+)\b",
+        )
+        .unwrap()
+    });
+
+    if !RE.is_match(sql) {
+        return None;
+    }
+    Some(RE.replace_all(sql, "$1:$2::oid").into_owned())
+}
+
+/// `SELECT c.oid, c.*, ... FROM pg_catalog.pg_class c ...` — `c.*` exposes
+/// `relkind` (char(1)), `relpersistence`, `relreplident`, `relkind` (char) and
+/// `relacl` (aclitem[]), all of which Aurora's Data API refuses. Replace
+/// `c.*` with an explicit column list that casts the offenders to text.
+fn rewrite_pg_class_star(sql: &str) -> Option<String> {
+    static FROM_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\bFROM\s+(?:pg_catalog\.)?pg_class\s+(?:AS\s+)?c\b").unwrap()
+    });
+    static STAR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bc\.\*").unwrap());
+
+    if !FROM_RE.is_match(sql) || !STAR_RE.is_match(sql) {
+        return None;
+    }
+    // Columns from pg_class (PG14+). char(1)/aclitem[]/pg_node_tree casts to text.
+    let cols = "\
+c.relname, c.relnamespace, c.reltype, c.reloftype, c.relowner, c.relam, \
+c.relfilenode, c.reltablespace, c.relpages, c.reltuples, c.relallvisible, \
+c.reltoastrelid, c.relhasindex, c.relisshared, \
+c.relpersistence::text AS relpersistence, \
+c.relkind::text AS relkind, \
+c.relnatts, c.relchecks, c.relhasrules, c.relhastriggers, c.relhassubclass, \
+c.relrowsecurity, c.relforcerowsecurity, c.relispopulated, \
+c.relreplident::text AS relreplident, \
+c.relispartition, c.relrewrite, c.relfrozenxid, c.relminmxid, \
+c.relacl::text AS relacl, \
+c.reloptions::text AS reloptions, \
+c.relpartbound::text AS relpartbound";
+    Some(STAR_RE.replace(sql, cols).into_owned())
 }
 
 /// DBeaver schema browser fires
@@ -147,6 +213,30 @@ mod tests {
         assert!(out.contains("n.nspacl::text AS nspacl"));
         assert!(!out.contains("n.*"));
         assert!(out.contains("ORDER BY nspname"));
+    }
+
+    #[test]
+    fn casts_oid_placeholder_after_relnamespace() {
+        let sql = "SELECT c.oid FROM pg_class c WHERE c.relnamespace=:p1 AND c.relkind not in ('i')";
+        let out = maybe_rewrite(sql).expect("matches oid placeholder");
+        assert!(out.contains("c.relnamespace=:p1::oid"));
+    }
+
+    #[test]
+    fn casts_oid_placeholder_with_spaces() {
+        let sql = "SELECT 1 FROM pg_class WHERE relnamespace = :p2";
+        let out = maybe_rewrite(sql).expect("matches");
+        assert!(out.contains("relnamespace = :p2::oid"));
+    }
+
+    #[test]
+    fn rewrites_pg_class_star() {
+        let sql = "SELECT c.oid,c.*,d.description FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_description d ON d.objoid=c.oid WHERE c.relnamespace=:p1 AND c.relkind not in ('i','c')";
+        let out = maybe_rewrite(sql).expect("matches pg_class");
+        assert!(out.contains("c.relkind::text AS relkind"));
+        assert!(out.contains("c.relacl::text AS relacl"));
+        assert!(out.contains("c.relnamespace=:p1::oid"));
+        assert!(!out.contains("c.*"));
     }
 
     #[test]
