@@ -15,16 +15,16 @@ Spec: `docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md`
 
 ### M1 — Scaffolding
 
-- [ ] `cc:TODO` Init Cargo crate (`cargo init --bin`), set edition 2021, add deps: `tokio`, `pgwire`, `aws-sdk-rdsdata`, `aws-config`, `tracing`, `tracing-subscriber`, `clap`, `serde`, `toml`, `phf`, `regex`, `thiserror`.
-- [ ] `cc:TODO` Wire `clap` CLI: `--config`, `--listen`, `--log-level`.
-- [ ] `cc:TODO` Set up `tracing` subscriber + `main.rs` bootstrap (load config → spawn server).
+- [x] `cc:完了` Init Cargo crate (`cargo init --bin`), edition 2021, deps: `clap`, `serde`, `toml`, `tracing`, `tracing-subscriber`, `thiserror`, `regex`, `once_cell` (tokio/pgwire/aws SDKs deferred to M3/M4 — need verified API references first).
+- [x] `cc:完了` Wire `clap` CLI: `--config`, `--listen`, `--log-level`.
+- [x] `cc:完了` `tracing` subscriber + `main.rs` bootstrap (loads config; server spawn deferred).
 
 ### M2 — Config
 
-- [ ] `cc:TODO` `config.rs`: TOML schema + `serde` derive.
-- [ ] `cc:TODO` Structural validation (ARN regex, dup target names, `listen` parse).
-- [ ] `cc:TODO` Lazy profile resolution (resolve on first connection, cache per target).
-- [ ] `cc:TODO` Unit tests: parse valid + invalid configs.
+- [x] `cc:完了` `config.rs`: TOML schema + `serde` derive.
+- [x] `cc:完了` Structural validation (ARN regex, listen parse, missing field detection).
+- [x] `cc:完了` Lazy profile resolution helper (`Config::resolve_profile`).
+- [x] `cc:完了` Unit tests: 7 cases covering valid/invalid configs + profile precedence.
 
 ### M3 — Pg wire scaffold
 
@@ -36,12 +36,12 @@ Spec: `docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md`
 
 - [ ] `cc:TODO` `rds::client` — build `aws_sdk_rdsdata::Client` per profile.
 - [ ] `cc:TODO` `rds::txn` — `BeginTransaction` / `CommitTransaction` / `RollbackTransaction` wrappers.
-- [ ] `cc:TODO` `pg::types` — static `phf` typeName→OID map; value formatter for each Data API field variant; pg array literal encoder.
-- [ ] `cc:TODO` Unit tests: type map, value formatter, array literal edge cases.
+- [x] `cc:完了` `types.rs` — typeName→OID match (used `match` not `phf` — simpler, equivalent perf for ~40 entries); pg array literal encoder + bytea hex encoder. 6 unit tests.
+- [x] `cc:完了` Unit tests: type map, value formatter, array literal edge cases.
 
 ### M5 — Simple Query path
 
-- [ ] `cc:TODO` `intercept.rs` — regex-based rejection (SAVEPOINT/COPY/CURSOR/LISTEN/NOTIFY/FETCH/MOVE).
+- [x] `cc:完了` `intercept.rs` — regex-based rejection (SAVEPOINT/COPY/CURSOR/LISTEN/NOTIFY/FETCH/MOVE) + txn verb classification + `leading_verb()` helper. 9 unit tests.
 - [ ] `cc:TODO` `pg::simple_query` — handle `Q`: route txn verbs vs `ExecuteStatement`.
 - [ ] `cc:TODO` Response translation: `RowDescription` + `DataRow`s + `CommandComplete` (verb-tagged) + `ReadyForQuery`.
 - [ ] `cc:TODO` Error mapping: Data API errors → pg `ErrorResponse`; in-txn error → `E` state.
@@ -49,7 +49,7 @@ Spec: `docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md`
 
 ### M6 — Extended Query path
 
-- [ ] `cc:TODO` Param rewriter `$N` → `:pN` lexer (skip strings, `--` and `/* */` comments, dollar-quoted blocks). Unit-tested heavily.
+- [x] `cc:完了` Param rewriter `$N` → `:pN` lexer in `rewriter.rs` (skips single-quoted strings, double-quoted identifiers, `--` line comments, nested `/* */` block comments, dollar-quoted blocks with named & empty tags). 13 unit tests covering edge cases incl. unterminated literals.
 - [ ] `cc:TODO` `pg::extended` — handle Parse / Bind / Describe / Execute / Sync; portal & statement maps per session.
 - [ ] `cc:TODO` Param value decode (pg text/binary by OID) → Data API `SqlParameter` (`stringValue`/`longValue`/`doubleValue`/`booleanValue`/`isNull`/`blobValue`).
 - [ ] `cc:TODO` Integration test (mocked SDK): parameterised query via `tokio_postgres`.
@@ -63,6 +63,14 @@ Spec: `docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md`
 ## Out of scope (v1)
 
 COPY, server-side cursors, LISTEN/NOTIFY, SAVEPOINT, prepared-statement caching, multi-statement Q, auto-pagination, TLS to client. Updating spec required before adding.
+
+## Status (2026-05-14)
+
+**Shipped:** Cargo crate, CLI bootstrap, config loader+validator, intercept layer, type map, value formatters, $N→:pN rewriter. **35 unit tests pass, clippy clean.**
+
+**Halted before:** pgwire wire codec, AWS SDK integration, server accept loop, transaction state machine, response translation, end-to-end integration.
+
+**Why halted:** Requires verified API surface for `pgwire` and `aws-sdk-rdsdata` crates. context7 was unavailable when checked. Continuing without docs would mean guessing API signatures and shipping non-compiling code. Resume with: `cargo doc --open` of those crates, or context7 lookup, before writing M3/M4.
 
 ## Archive
 
