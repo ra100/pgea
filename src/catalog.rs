@@ -48,7 +48,7 @@ fn cast_oid_placeholders(sql: &str) -> Option<String> {
         // Match `<alias>.<col> = :pN` or `<col> = :pN` for a small list of
         // canonical oid-typed catalog columns.
         Regex::new(
-            r"(?i)((?:\w+\.)?(?:relnamespace|relfilenode|reltype|reltoastrelid|relowner|relam|reloftype|relrewrite|typrelid|typelem|typarray|typbasetype|typnamespace|typowner|typsubscript|attrelid|atttypid|attcollation|conrelid|contypid|conindid|conparentid|confrelid|indexrelid|indrelid|conkey|confkey|inhparent|inhrelid|nspowner|adrelid|adnum|enumtypid|pronamespace|proowner|prolang|provariadic|proargdefaults|protrftypes|prorettype|proallargtypes|proargtypes|proargmodes|proargnames|prosrc|probin|proconfig|amhandler|opfmethod|opfnamespace|opfowner|opcmethod|opcnamespace|opcowner|opcfamily|opcintype|opckeytype|amopfamily|amoplefttype|amoprighttype|amopopr|amopmethod|amopsortfamily|amprocfamily|amproclefttype|amprocrighttype|amproc|conpfeqop|conppeqop|conffeqop|partrelid|partclass|partcollation|partexprs|classid|objid|refclassid|refobjid)\s*(?:=|<>|!=|<=|>=|<|>)\s*):(p\d+)\b",
+            r"(?i)((?:\w+\.)?(?:oid|relnamespace|relfilenode|reltype|reltoastrelid|relowner|relam|reloftype|relrewrite|typrelid|typelem|typarray|typbasetype|typnamespace|typowner|typsubscript|attrelid|atttypid|attcollation|conrelid|contypid|conindid|conparentid|confrelid|indexrelid|indrelid|conkey|confkey|inhparent|inhrelid|nspowner|adrelid|adnum|enumtypid|pronamespace|proowner|prolang|provariadic|proargdefaults|protrftypes|prorettype|proallargtypes|proargtypes|proargmodes|proargnames|prosrc|probin|proconfig|amhandler|opfmethod|opfnamespace|opfowner|opcmethod|opcnamespace|opcowner|opcfamily|opcintype|opckeytype|amopfamily|amoplefttype|amoprighttype|amopopr|amopmethod|amopsortfamily|amprocfamily|amproclefttype|amprocrighttype|amproc|conpfeqop|conppeqop|conffeqop|partrelid|partclass|partcollation|partexprs|classid|objid|refclassid|refobjid)\s*(?:=|<>|!=|<=|>=|<|>)\s*):(p\d+)\b",
         )
         .unwrap()
     });
@@ -264,6 +264,13 @@ mod tests {
         let sql = "SELECT c.oid FROM pg_class c WHERE c.relnamespace=:p1 AND c.relkind not in ('i')";
         let out = maybe_rewrite(sql).expect("matches oid placeholder");
         assert!(out.contains("c.relnamespace=:p1::oid"));
+    }
+
+    #[test]
+    fn casts_oid_placeholder_for_bare_oid_column() {
+        let sql = "SELECT 1 FROM pg_class c WHERE c.oid=:p1";
+        let out = maybe_rewrite(sql).expect("matches");
+        assert!(out.contains("c.oid=:p1::oid"));
     }
 
     #[test]
