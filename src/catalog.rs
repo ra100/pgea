@@ -82,6 +82,9 @@ fn rewrite_pg_class_star(sql: &str) -> Option<String> {
     // because those occasionally yield strings containing 0x00 (the Data
     // API only allows valid UTF-8 with no NULs). DBeaver tolerates NULL
     // in those positions.
+    // relacl and reloptions occasionally contain bytes the Data API
+    // refuses (we've seen 'invalid byte sequence for encoding UTF8: 0x00'
+    // even after ::text casts). Substitute NULL — DBeaver tolerates it.
     let cols = "\
 c.relname, c.relnamespace, c.reltype, c.reloftype, c.relowner, c.relam, \
 c.relfilenode, c.reltablespace, c.relpages, c.reltuples, c.relallvisible, \
@@ -92,8 +95,8 @@ c.relnatts, c.relchecks, c.relhasrules, c.relhastriggers, c.relhassubclass, \
 c.relrowsecurity, c.relforcerowsecurity, c.relispopulated, \
 c.relreplident::text AS relreplident, \
 c.relispartition, c.relrewrite, c.relfrozenxid, c.relminmxid, \
-c.relacl::text AS relacl, \
-c.reloptions::text AS reloptions, \
+NULL::text AS relacl, \
+NULL::text AS reloptions, \
 pg_catalog.pg_get_expr(c.relpartbound, c.oid) AS relpartbound";
     let mut out = STAR_RE.replace(sql, cols).into_owned();
 
@@ -271,7 +274,7 @@ mod tests {
         let sql = "SELECT c.oid,c.*,d.description,pg_catalog.pg_get_expr(c.relpartbound, c.oid) as partition_expr,  pg_catalog.pg_get_partkeydef(c.oid) as partition_key FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_description d ON d.objoid=c.oid WHERE c.relnamespace=:p1 AND c.relkind not in ('i','c')";
         let out = maybe_rewrite(sql).expect("matches pg_class");
         assert!(out.contains("c.relkind::text AS relkind"));
-        assert!(out.contains("c.relacl::text AS relacl"));
+        assert!(out.contains("NULL::text AS relacl"));
         assert!(out.contains("pg_catalog.pg_get_expr(c.relpartbound, c.oid) AS relpartbound"));
         assert!(out.contains("c.relnamespace=:p1::oid"));
         assert!(!out.contains("c.*"));
