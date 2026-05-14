@@ -45,7 +45,7 @@ Spec: `docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md`
 - [x] `cc:完了` `pg::server::Session::do_query` — routes via intercept module to BeginTransaction/Execute/Commit/Rollback through `RdsClient`.
 - [x] `cc:完了` Response translation via pgwire `QueryResponse` + `DataRowEncoder`; verb-tagged `CommandComplete` (SELECT N / INSERT 0 N / UPDATE N / DELETE N).
 - [x] `cc:完了` Error mapping: Data API errors → pg `Response::Error(ErrorInfo)`; in-txn error sets `TxnState::failed` → status `E`; aborted-txn statements rejected with 25P02.
-- [ ] `cc:TODO` Integration test (mocked SDK + `tokio_postgres` client) — needs adding `tokio-postgres` dev-dep + spawning local listener; deferred.
+- [x] `cc:完了` Integration test (mocked SDK + `tokio_postgres` client) — `tests/extended_query.rs` covers Simple Query rows, BEGIN/INSERT/COMMIT routing, Extended Query with `$1` → `:p1` param rewrite, and 3D000 on unknown dbname. Added `pg::server::run_with_listener` test seam + `tokio-postgres` dev-dep. Also fixed `do_describe_statement` to report parameter types so non-JDBC clients don't fail on `ParameterDescription`.
 
 ### M6 — Extended Query path
 

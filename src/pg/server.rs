@@ -81,6 +81,21 @@ impl Connection {
         }
     }
 
+    /// Construct a [`Connection`] with a pre-installed RDS client. Used by
+    /// integration tests so the StartupHandler skips real AWS credential
+    /// resolution and reuses the supplied client for every per-connection
+    /// session.
+    pub fn with_test_client(config: Arc<Config>, test_client: Arc<dyn RdsClient>) -> Self {
+        let conn = Self::new(config);
+        // Mutex::new was already constructed empty; we replace it below via
+        // a blocking lock since this runs at construction time, before the
+        // value is shared with any task. `try_lock` is enough.
+        if let Ok(mut guard) = conn.test_client.try_lock() {
+            *guard = Some(test_client);
+        }
+        conn
+    }
+
     /// Construct an [`AwsRdsClient`] for the given target and profile, or
     /// return an injected test client when one was supplied.
     async fn build_rds_client(
@@ -640,14 +655,31 @@ impl ExtendedQueryHandler for Connection {
     async fn do_describe_statement<C>(
         &self,
         _client: &mut C,
-        _statement: &StoredStatement<Self::Statement>,
+        statement: &StoredStatement<Self::Statement>,
     ) -> PgWireResult<DescribeStatementResponse>
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
-        // No prepare-time introspection on the Data API. JDBC tolerates
-        // empty here; the real schema is delivered by Describe(Portal).
-        Ok(DescribeStatementResponse::new(vec![], vec![]))
+        // No prepare-time introspection of result columns on the Data API,
+        // so the row-description list stays empty here — the real schema is
+        // delivered by Describe(Portal). But the parameter type list must
+        // be non-empty when the SQL contains placeholders: tokio-postgres
+        // checks `Bind` parameter count against this `ParameterDescription`
+        // and aborts with `Parameters(N, 0)` on mismatch. JDBC tolerates
+        // the empty form; tokio-postgres does not.
+        //
+        // If the client's Parse declared parameter types, echo them back.
+        // Otherwise count `$N` placeholders in the original SQL via the
+        // rewriter and report each as `Type::UNKNOWN` — Postgres' standard
+        // way to ask the server to pick a binding-time type, which is the
+        // closest we can do without a live db to do real inference.
+        let param_types = if statement.parameter_types.is_empty() {
+            let rewritten = rewriter::rewrite(statement.statement.as_str());
+            vec![Type::UNKNOWN; rewritten.params.len()]
+        } else {
+            statement.parameter_types.clone()
+        };
+        Ok(DescribeStatementResponse::new(param_types, vec![]))
     }
 
     async fn do_describe_portal<C>(
@@ -782,12 +814,33 @@ fn field_to_text(f: &Field) -> String {
 pub async fn run(config: Arc<Config>) -> std::io::Result<()> {
     let listener = TcpListener::bind(&config.listen).await?;
     info!(addr = %config.listen, targets = config.targets.len(), "pg-rds-connector listening");
+    accept_loop(listener, config, None).await
+}
 
+/// Run the accept loop on a pre-bound `TcpListener`. Useful for integration
+/// tests that need to bind an ephemeral port and inject a mock RDS client
+/// without going through the AWS credential chain.
+pub async fn run_with_listener(
+    listener: TcpListener,
+    config: Arc<Config>,
+    test_client: Option<Arc<dyn RdsClient>>,
+) -> std::io::Result<()> {
+    accept_loop(listener, config, test_client).await
+}
+
+async fn accept_loop(
+    listener: TcpListener,
+    config: Arc<Config>,
+    test_client: Option<Arc<dyn RdsClient>>,
+) -> std::io::Result<()> {
     loop {
         let (socket, peer) = listener.accept().await?;
         debug!(?peer, "accepted connection");
 
-        let connection = Arc::new(Connection::new(config.clone()));
+        let connection = Arc::new(match test_client.clone() {
+            Some(c) => Connection::with_test_client(config.clone(), c),
+            None => Connection::new(config.clone()),
+        });
         let handlers = ProxyHandlers { connection };
 
         tokio::spawn(async move {
