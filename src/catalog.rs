@@ -10,13 +10,35 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 /// Rewrite known catalog queries that would otherwise trip
-/// `UnsupportedResultException`. Returns the rewritten SQL when a rule
-/// matches; returns `None` for SQL we don't touch.
+/// `UnsupportedResultException` or other Aurora type-output errors.
+/// Returns the rewritten SQL when a rule matches; returns `None` for
+/// SQL we don't touch.
 pub fn maybe_rewrite(sql: &str) -> Option<String> {
     if let Some(out) = rewrite_pg_type_star(sql) {
         return Some(out);
     }
+    if let Some(out) = rewrite_pg_namespace_star(sql) {
+        return Some(out);
+    }
     None
+}
+
+/// DBeaver schema browser fires
+/// `SELECT n.oid, n.*, d.description FROM pg_catalog.pg_namespace n ...`.
+/// `n.*` pulls `nspacl` which is `aclitem[]` — Aurora has no binary output
+/// function for aclitem and the Data API request fails. Replace `n.*` with
+/// an explicit column list that casts `nspacl` to text.
+fn rewrite_pg_namespace_star(sql: &str) -> Option<String> {
+    static FROM_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\bFROM\s+(?:pg_catalog\.)?pg_namespace\s+(?:AS\s+)?n\b").unwrap()
+    });
+    static STAR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bn\.\*").unwrap());
+
+    if !FROM_RE.is_match(sql) || !STAR_RE.is_match(sql) {
+        return None;
+    }
+    let cols = "n.nspname, n.nspowner, n.nspacl::text AS nspacl";
+    Some(STAR_RE.replace(sql, cols).into_owned())
 }
 
 /// DBeaver / DataGrip ship a metadata reader that does
@@ -116,6 +138,15 @@ mod tests {
         assert!(out.contains("c.relkind::text AS relkind"));
         // Predicate should still read raw c.relkind.
         assert!(out.contains("(c.relkind IS NULL OR c.relkind = 'c')"));
+    }
+
+    #[test]
+    fn rewrites_pg_namespace_star() {
+        let sql = "SELECT n.oid,n.*,d.description FROM pg_catalog.pg_namespace n LEFT OUTER JOIN pg_catalog.pg_description d ON d.objoid=n.oid AND d.objsubid=0 AND d.classoid='pg_namespace'::regclass ORDER BY nspname";
+        let out = maybe_rewrite(sql).expect("matches pg_namespace");
+        assert!(out.contains("n.nspacl::text AS nspacl"));
+        assert!(!out.contains("n.*"));
+        assert!(out.contains("ORDER BY nspname"));
     }
 
     #[test]
