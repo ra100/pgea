@@ -65,8 +65,11 @@ impl RdsClient for RecordingMock {
         transaction_id: Option<&str>,
     ) -> Result<ExecuteOutput, RdsError> {
         let mut s = self.state.lock().unwrap();
-        s.executes
-            .push((sql.to_owned(), parameters, transaction_id.map(str::to_owned)));
+        s.executes.push((
+            sql.to_owned(),
+            parameters,
+            transaction_id.map(str::to_owned),
+        ));
         for (needle, out) in &s.canned {
             if sql.contains(needle) {
                 return Ok(out.clone());
@@ -82,11 +85,7 @@ impl RdsClient for RecordingMock {
     }
 
     async fn commit_transaction(&self, tx: &str) -> Result<(), RdsError> {
-        self.state
-            .lock()
-            .unwrap()
-            .commit_calls
-            .push(tx.to_owned());
+        self.state.lock().unwrap().commit_calls.push(tx.to_owned());
         Ok(())
     }
 
@@ -209,15 +208,13 @@ async fn extended_query_rewrites_params() {
     // that read schema from Describe(Portal), but tokio-postgres' typed
     // query flow expects schema from Describe(Statement). INSERT side-steps
     // both — we just want to assert the SQL parameter rewrite.
-    let mock = Arc::new(
-        RecordingMock::new("tx-ext").with_response(
-            "INSERT INTO accounts",
-            ExecuteOutput {
-                rows_affected: 1,
-                ..ExecuteOutput::default()
-            },
-        ),
-    );
+    let mock = Arc::new(RecordingMock::new("tx-ext").with_response(
+        "INSERT INTO accounts",
+        ExecuteOutput {
+            rows_affected: 1,
+            ..ExecuteOutput::default()
+        },
+    ));
     let addr = spawn_proxy("dev", mock.clone()).await;
     let client = connect(&addr, "dev").await;
 
@@ -251,24 +248,22 @@ async fn explicit_transaction_routes_to_begin_commit() {
     let addr = spawn_proxy("dev", mock.clone()).await;
     let client = connect(&addr, "dev").await;
 
-    client
-        .simple_query("BEGIN")
-        .await
-        .expect("BEGIN ok");
+    client.simple_query("BEGIN").await.expect("BEGIN ok");
     client
         .simple_query("INSERT INTO t VALUES (1)")
         .await
         .expect("INSERT ok");
-    client
-        .simple_query("COMMIT")
-        .await
-        .expect("COMMIT ok");
+    client.simple_query("COMMIT").await.expect("COMMIT ok");
 
     let s = mock.state.lock().unwrap();
     assert_eq!(s.begin_calls, 1);
     assert_eq!(s.commit_calls, vec!["tx-abcdef".to_owned()]);
     assert!(s.rollback_calls.is_empty());
-    assert_eq!(s.executes.len(), 1, "INSERT should be the only ExecuteStatement");
+    assert_eq!(
+        s.executes.len(),
+        1,
+        "INSERT should be the only ExecuteStatement"
+    );
     assert_eq!(s.executes[0].2.as_deref(), Some("tx-abcdef"));
 }
 

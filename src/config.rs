@@ -36,10 +36,7 @@ pub enum ConfigError {
     },
 
     #[error("target {target:?}: missing {field}")]
-    MissingField {
-        target: String,
-        field: &'static str,
-    },
+    MissingField { target: String, field: &'static str },
 
     #[error("no targets configured")]
     NoTargets,
@@ -168,7 +165,11 @@ impl Config {
 
     /// Resolve which AWS profile to use for a connection.
     /// Precedence: per-connection override > target.profile > default_profile > None (default chain).
-    pub fn resolve_profile(&self, target: &Target, override_profile: Option<&str>) -> Option<String> {
+    pub fn resolve_profile(
+        &self,
+        target: &Target,
+        override_profile: Option<&str>,
+    ) -> Option<String> {
         override_profile
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
@@ -305,9 +306,6 @@ region      = "us-east-1"
             Some("dev-profile".to_string())
         );
         // No override, target has no profile, falls back to default.
-        assert_eq!(
-            cfg.resolve_profile(prod, None),
-            Some("default".to_string())
-        );
+        assert_eq!(cfg.resolve_profile(prod, None), Some("default".to_string()));
     }
 }

@@ -302,8 +302,11 @@ pub mod mock {
             transaction_id: Option<&str>,
         ) -> Result<ExecuteOutput, RdsError> {
             let mut s = self.state.lock().unwrap();
-            s.executes
-                .push((sql.to_string(), parameters, transaction_id.map(str::to_owned)));
+            s.executes.push((
+                sql.to_string(),
+                parameters,
+                transaction_id.map(str::to_owned),
+            ));
             if let Some(msg) = s.canned_execute_err.clone() {
                 return Err(RdsError::Service(msg));
             }
@@ -313,7 +316,9 @@ pub mod mock {
         async fn begin_transaction(&self) -> Result<String, RdsError> {
             let mut s = self.state.lock().unwrap();
             s.begin_calls += 1;
-            Ok(s.canned_txn_id.clone().unwrap_or_else(|| "tx-1".to_string()))
+            Ok(s.canned_txn_id
+                .clone()
+                .unwrap_or_else(|| "tx-1".to_string()))
         }
 
         async fn commit_transaction(&self, tx: &str) -> Result<(), RdsError> {

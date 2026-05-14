@@ -58,7 +58,11 @@ pub fn maybe_rewrite(sql: &str) -> Option<String> {
         changed = true;
     }
 
-    if changed { Some(out) } else { None }
+    if changed {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 /// We pass every Extended Query parameter as `stringValue` (text), which
@@ -134,10 +138,8 @@ NULL::text AS relpartbound";
     // Replace each with NULL so the projection shape is unchanged.
     static D_DESC: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bd\.description\b").unwrap());
     static PARTKEYDEF: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?i)pg_catalog\.pg_get_partkeydef\s*\(\s*c\.oid\s*\)\s*as\s+partition_key",
-        )
-        .unwrap()
+        Regex::new(r"(?i)pg_catalog\.pg_get_partkeydef\s*\(\s*c\.oid\s*\)\s*as\s+partition_key")
+            .unwrap()
     });
     static PARTEXPR: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
@@ -160,9 +162,8 @@ NULL::text AS relpartbound";
 /// `amhandler` (regproc) and `amtype` (char(1)). Aurora rejects both. Cast
 /// to text via aliases.
 fn rewrite_pg_am_star(sql: &str) -> Option<String> {
-    static FROM_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)\bFROM\s+(?:pg_catalog\.)?pg_am\s+(?:AS\s+)?am\b").unwrap()
-    });
+    static FROM_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)\bFROM\s+(?:pg_catalog\.)?pg_am\s+(?:AS\s+)?am\b").unwrap());
     static STAR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bam\.\*").unwrap());
 
     if !FROM_RE.is_match(sql) || !STAR_RE.is_match(sql) {
@@ -237,9 +238,8 @@ NULL::text AS indexprs, NULL::text AS indpred";
 
     // DBeaver also projects `i.indkey as keys` (raw int2vector) alongside
     // the star expansion. Cast that copy too — same Aurora rejection.
-    static KEYS_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)\bi\.indkey\s+as\s+keys\b").unwrap()
-    });
+    static KEYS_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)\bi\.indkey\s+as\s+keys\b").unwrap());
     out = KEYS_RE
         .replace_all(&out, "i.indkey::text AS keys")
         .into_owned();
@@ -346,9 +346,8 @@ fn rewrite_pg_namespace_star(sql: &str) -> Option<String> {
 /// Replace `t.*` with an explicit column list that casts the CHAR columns
 /// to text, leaving every other column untouched.
 fn rewrite_pg_type_star(sql: &str) -> Option<String> {
-    static FROM_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)\bFROM\s+(?:pg_catalog\.)?pg_type\s+(?:AS\s+)?t\b").unwrap()
-    });
+    static FROM_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)\bFROM\s+(?:pg_catalog\.)?pg_type\s+(?:AS\s+)?t\b").unwrap());
     static STAR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bt\.\*").unwrap());
 
     if !FROM_RE.is_match(sql) {
@@ -390,11 +389,7 @@ t.typdefault, t.typacl::text AS typacl";
     // the upstream query is `,c.relkind,`. Replace that single occurrence;
     // predicate uses (`c.relkind IS NULL`, `c.relkind = 'c'`) keep their
     // unmodified `c.relkind` reference because they don't sit between commas.
-    out = out.replacen(
-        ",c.relkind,",
-        ",c.relkind::text AS relkind,",
-        1,
-    );
+    out = out.replacen(",c.relkind,", ",c.relkind::text AS relkind,", 1);
 
     Some(out)
 }
@@ -449,7 +444,8 @@ mod tests {
 
     #[test]
     fn casts_oid_placeholder_after_relnamespace() {
-        let sql = "SELECT c.oid FROM pg_class c WHERE c.relnamespace=:p1 AND c.relkind not in ('i')";
+        let sql =
+            "SELECT c.oid FROM pg_class c WHERE c.relnamespace=:p1 AND c.relkind not in ('i')";
         let out = maybe_rewrite(sql).expect("matches oid placeholder");
         assert!(out.contains("c.relnamespace=:p1::oid"));
     }

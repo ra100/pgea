@@ -19,9 +19,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use aws_config::BehaviorVersion;
 use futures::{stream, Sink, SinkExt};
-use pgwire::api::auth::{
-    self, DefaultServerParameterProvider, StartupHandler,
-};
+use pgwire::api::auth::{self, DefaultServerParameterProvider, StartupHandler};
 use pgwire::api::portal::Portal;
 use pgwire::api::query::{ExtendedQueryHandler, SimpleQueryHandler};
 use pgwire::api::results::{
@@ -98,11 +96,7 @@ impl Connection {
 
     /// Construct an [`AwsRdsClient`] for the given target and profile, or
     /// return an injected test client when one was supplied.
-    async fn build_rds_client(
-        &self,
-        target: &Target,
-        profile: Option<&str>,
-    ) -> Arc<dyn RdsClient> {
+    async fn build_rds_client(&self, target: &Target, profile: Option<&str>) -> Arc<dyn RdsClient> {
         if let Some(c) = self.test_client.lock().await.clone() {
             return c;
         }
@@ -189,27 +183,20 @@ impl StartupHandler for Connection {
                     .get(METADATA_DATABASE)
                     .cloned()
                     .unwrap_or_default();
-                let target = self
-                    .config
-                    .target(&db)
-                    .cloned()
-                    .ok_or_else(|| {
-                        PgWireError::UserError(Box::new(ErrorInfo::new(
-                            "FATAL".into(),
-                            "3D000".into(),
-                            format!(
-                                "database {db:?} not configured as a target in pg-rds-connector"
-                            ),
-                        )))
-                    })?;
+                let target = self.config.target(&db).cloned().ok_or_else(|| {
+                    PgWireError::UserError(Box::new(ErrorInfo::new(
+                        "FATAL".into(),
+                        "3D000".into(),
+                        format!("database {db:?} not configured as a target in pg-rds-connector"),
+                    )))
+                })?;
 
                 let profile_override = if password_text.is_empty() {
                     None
                 } else {
                     Some(password_text.as_str())
                 };
-                let resolved_profile =
-                    self.config.resolve_profile(&target, profile_override);
+                let resolved_profile = self.config.resolve_profile(&target, profile_override);
 
                 info!(
                     user = client.metadata().get("user").map(|s| s.as_str()).unwrap_or(""),
@@ -239,12 +226,7 @@ impl StartupHandler for Connection {
 impl SimpleQueryHandler for Connection {
     async fn do_query<C>(&self, _client: &mut C, query: &str) -> PgWireResult<Vec<Response>>
     where
-        C: ClientInfo
-            + ClientPortalStore
-            + Sink<PgWireBackendMessage>
-            + Unpin
-            + Send
-            + Sync,
+        C: ClientInfo + ClientPortalStore + Sink<PgWireBackendMessage> + Unpin + Send + Sync,
         C::Error: Debug,
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
@@ -372,9 +354,11 @@ fn is_unsupported_type_error(msg: &str) -> bool {
 /// to decode the type (caller falls back).
 fn decode_binary_scalar(ty: &Type, bytes: &[u8]) -> Option<String> {
     match *ty {
-        Type::BOOL if bytes.len() == 1 => {
-            Some(if bytes[0] == 0 { "f".into() } else { "t".into() })
-        }
+        Type::BOOL if bytes.len() == 1 => Some(if bytes[0] == 0 {
+            "f".into()
+        } else {
+            "t".into()
+        }),
         Type::INT2 if bytes.len() == 2 => {
             Some(i16::from_be_bytes([bytes[0], bytes[1]]).to_string())
         }
@@ -455,9 +439,9 @@ impl Connection {
         if !is_binary {
             return match std::str::from_utf8(bytes) {
                 Ok(s) => AwsField::StringValue(s.to_owned()),
-                Err(_) => AwsField::BlobValue(
-                    aws_sdk_rdsdata::primitives::Blob::new(bytes.to_vec()),
-                ),
+                Err(_) => {
+                    AwsField::BlobValue(aws_sdk_rdsdata::primitives::Blob::new(bytes.to_vec()))
+                }
             };
         }
 
@@ -907,10 +891,7 @@ region      = "eu-west-1"
         );
 
         // 3. no target.profile → default_profile
-        assert_eq!(
-            cfg.resolve_profile(prod, None).as_deref(),
-            Some("fallback"),
-        );
+        assert_eq!(cfg.resolve_profile(prod, None).as_deref(), Some("fallback"),);
 
         // 4. an empty override is treated as "use default" (string filter
         //    trims false-truthy empty strings inside resolve_profile).
@@ -935,4 +916,3 @@ region      = "eu-west-1"
         assert!(Arc::ptr_eq(&returned, &mock));
     }
 }
-

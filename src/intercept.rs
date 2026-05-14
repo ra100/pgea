@@ -51,7 +51,10 @@ static ROLLBACK: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*ROLLBACK\b").un
 pub fn classify(sql: &str) -> Action {
     if let Some(m) = REJECT.captures(sql) {
         // Extract a stable label for the rejection message.
-        let raw = m.get(1).map(|m| m.as_str().to_uppercase()).unwrap_or_default();
+        let raw = m
+            .get(1)
+            .map(|m| m.as_str().to_uppercase())
+            .unwrap_or_default();
         let op: &'static str = if raw.starts_with("SAVEPOINT") {
             "SAVEPOINT"
         } else if raw.starts_with("RELEASE") {
@@ -149,10 +152,7 @@ mod tests {
 
     #[test]
     fn classifies_copy() {
-        assert_eq!(
-            classify("COPY users TO STDOUT"),
-            Action::Reject("COPY")
-        );
+        assert_eq!(classify("COPY users TO STDOUT"), Action::Reject("COPY"));
     }
 
     #[test]
@@ -184,11 +184,11 @@ mod tests {
     fn classifies_normal_statements_as_execute() {
         assert_eq!(classify("SELECT 1"), Action::Execute);
         assert_eq!(classify("UPDATE t SET a = 1"), Action::Execute);
+        assert_eq!(classify("INSERT INTO t (a) VALUES (1)"), Action::Execute);
         assert_eq!(
-            classify("INSERT INTO t (a) VALUES (1)"),
+            classify("WITH x AS (SELECT 1) SELECT * FROM x"),
             Action::Execute
         );
-        assert_eq!(classify("WITH x AS (SELECT 1) SELECT * FROM x"), Action::Execute);
     }
 
     #[test]
@@ -196,10 +196,7 @@ mod tests {
         // "SELECT * FROM listen" uses listen as a table name, not a LISTEN statement.
         assert_eq!(classify("SELECT * FROM listen"), Action::Execute);
         // A column called "begin"
-        assert_eq!(
-            classify("SELECT begin FROM events"),
-            Action::Execute
-        );
+        assert_eq!(classify("SELECT begin FROM events"), Action::Execute);
     }
 
     #[test]
@@ -208,7 +205,10 @@ mod tests {
         assert_eq!(leading_verb("  insert into t values (1)"), Some("INSERT"));
         assert_eq!(leading_verb("UPDATE t SET x=1"), Some("UPDATE"));
         assert_eq!(leading_verb("DELETE FROM t"), Some("DELETE"));
-        assert_eq!(leading_verb("WITH x AS (SELECT 1) SELECT 1"), Some("SELECT"));
+        assert_eq!(
+            leading_verb("WITH x AS (SELECT 1) SELECT 1"),
+            Some("SELECT")
+        );
         assert_eq!(leading_verb("SET search_path = public"), Some("SET"));
         assert_eq!(leading_verb("SHOW server_version"), Some("SHOW"));
         assert_eq!(leading_verb("not a sql verb at all"), None);
