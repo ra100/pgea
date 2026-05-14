@@ -29,6 +29,10 @@ pub fn maybe_rewrite(sql: &str) -> Option<String> {
         out = r;
         changed = true;
     }
+    if let Some(r) = rewrite_pg_collation_star(&out) {
+        out = r;
+        changed = true;
+    }
     if let Some(r) = rewrite_pg_attribute_star(&out) {
         out = r;
         changed = true;
@@ -134,6 +138,26 @@ NULL::text AS relpartbound";
         .into_owned();
 
     Some(out)
+}
+
+/// `SELECT c.oid,c.* FROM pg_catalog.pg_collation c` — `c.*` exposes
+/// `collprovider` (char(1)) which Aurora refuses. Cast it; rest pass through.
+fn rewrite_pg_collation_star(sql: &str) -> Option<String> {
+    static FROM_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\bFROM\s+(?:pg_catalog\.)?pg_collation\s+(?:AS\s+)?c\b").unwrap()
+    });
+    static STAR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bc\.\*").unwrap());
+
+    if !FROM_RE.is_match(sql) || !STAR_RE.is_match(sql) {
+        return None;
+    }
+    // pg_collation columns (PG14+). collprovider char(1) → text.
+    let cols = "\
+c.collname, c.collnamespace, c.collowner, \
+c.collprovider::text AS collprovider, \
+c.collisdeterministic, c.collencoding, c.collcollate, c.collctype, \
+c.colliculocale, c.collicurules, c.collversion";
+    Some(STAR_RE.replace(sql, cols).into_owned())
 }
 
 /// DBeaver column-listing query selects `a.*` from `pg_attribute a`.
@@ -327,6 +351,15 @@ mod tests {
         assert!(!out.contains("d.description"));
         assert!(out.contains("NULL AS partition_key"));
         assert!(out.contains("NULL AS partition_expr"));
+    }
+
+    #[test]
+    fn rewrites_pg_collation_star() {
+        let sql = "SELECT c.oid,c.* FROM pg_catalog.pg_collation c ORDER BY c.oid";
+        let out = maybe_rewrite(sql).expect("matches pg_collation");
+        assert!(out.contains("c.collprovider::text AS collprovider"));
+        assert!(!out.contains("c.*"));
+        assert!(out.contains("ORDER BY c.oid"));
     }
 
     #[test]
