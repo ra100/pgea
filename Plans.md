@@ -56,9 +56,9 @@ Spec: `docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md`
 
 ### M7 — E2E + ops
 
-- [ ] `cc:TODO` E2E test gated by env var (real Aurora cluster). Smoke: connect, `SELECT 1`, txn, intercepted op error.
-- [ ] `cc:TODO` Manual DBeaver smoke (document connection settings in README).
-- [ ] `cc:TODO` Release: `cargo install` instructions + GH Actions for prebuilt macOS/Linux binaries.
+- [x] `cc:完了 [97a446a]` E2E test gated by env var (real Aurora cluster). `tests/e2e_aurora.rs` — `SELECT 1`, `BEGIN`/`ROLLBACK` round-trip, `SAVEPOINT` intercept. `PG_RDS_CONNECTOR_E2E=1` plus cluster/secret/database/region env vars to opt in; otherwise no-op.
+- [x] `cc:完了 [97a446a]` README DBeaver/DataGrip/TablePlus walkthrough + caveats; also fixes the broken `[[targets]]` config example to the real `[targets.<name>]` map syntax.
+- [x] `cc:完了 [97a446a]` `.github/workflows/release.yml` — on tag push (`v*`), builds release binaries for macOS arm64, macOS x86_64, Linux x86_64 GNU; tarball + sha256 attached to GitHub Release. README documents `cargo install --git` plus prebuilt-binary download.
 
 ## Out of scope (v1)
 
@@ -66,7 +66,7 @@ COPY, server-side cursors, LISTEN/NOTIFY, SAVEPOINT, prepared-statement caching,
 
 ## Status (2026-05-14)
 
-**Shipped (60 unit + 4 integration tests pass, clippy clean):**
+**Shipped (60 unit + 4 integration + 3 env-gated E2E tests pass, clippy clean):**
 - Cargo crate, CLI bootstrap, tokio runtime
 - Config loader + structural validation + lazy profile resolution
 - Intercept layer (rejection + txn verb classification + leading-verb helper)
@@ -81,10 +81,9 @@ COPY, server-side cursors, LISTEN/NOTIFY, SAVEPOINT, prepared-statement caching,
 - main.rs wires Config → tokio runtime → server with AWS-backed factory
 - README + MIT LICENSE; Cargo metadata (license/readme/repository) populated
 
-**Halted before:**
-- M7: E2E against real Aurora cluster (env-gated) + DBeaver smoke automation + release CI (cargo install instructions, GH Actions prebuilt macOS/Linux binaries)
+- M7 done — E2E env-gated suite (`tests/e2e_aurora.rs`), README DBeaver/DataGrip/TablePlus walkthrough + cargo install + prebuilt-binary docs, GH Actions release workflow (macOS arm64/x86_64, Linux x86_64 GNU)
 
-**Verified by:** `cargo build --release` succeeds; `cargo test` passes 60 unit + 4 integration tests; `cargo clippy --all-targets -- -D warnings` clean. Manually validated against a private Aurora cluster — DBeaver schema browser, table list, column list, constraints, indexes load end-to-end.
+**Verified by:** `cargo build --release` succeeds; `cargo test` passes 60 unit + 4 integration + 3 env-gated E2E (skipped without gate); `cargo clippy --all-targets -- -D warnings` clean. Manually validated against a private Aurora cluster — DBeaver schema browser, table list, column list, constraints, indexes load end-to-end. Real-cluster E2E run pending; release workflow not yet exercised against a tag.
 
 ## Archive
 
