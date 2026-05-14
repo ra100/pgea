@@ -210,7 +210,18 @@ i.indcollation::text AS indcollation, \
 i.indclass::text AS indclass, \
 i.indoption::text AS indoption, \
 NULL::text AS indexprs, NULL::text AS indpred";
-    Some(STAR_RE.replace(sql, cols).into_owned())
+    let mut out = STAR_RE.replace(sql, cols).into_owned();
+
+    // DBeaver also projects `i.indkey as keys` (raw int2vector) alongside
+    // the star expansion. Cast that copy too — same Aurora rejection.
+    static KEYS_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\bi\.indkey\s+as\s+keys\b").unwrap()
+    });
+    out = KEYS_RE
+        .replace_all(&out, "i.indkey::text AS keys")
+        .into_owned();
+
+    Some(out)
 }
 
 /// DBeaver's pg_depend probe selects `dep.deptype` (char(1)) and `cl.relkind`
@@ -470,6 +481,16 @@ mod tests {
         assert!(out.contains("i.indcollation::text AS indcollation"));
         assert!(out.contains("i.indrelid=:p1::oid"));
         assert!(!out.contains("i.*"));
+    }
+
+    #[test]
+    fn rewrites_pg_index_keys_alias() {
+        let sql = "SELECT i.*,i.indkey as keys,c.relname FROM pg_catalog.pg_index i INNER JOIN pg_catalog.pg_class c ON c.oid=i.indexrelid WHERE i.indrelid=:p1";
+        let out = maybe_rewrite(sql).expect("matches pg_index keys");
+        assert!(out.contains("i.indkey::text AS keys"));
+        // No raw int2vector reference remains.
+        assert!(!out.contains("i.indkey as keys"));
+        assert!(!out.contains("i.indkey AS keys"));
     }
 
     #[test]

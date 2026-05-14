@@ -3,7 +3,9 @@ name = "pg-rds-connector"
 version = "0.1.0"
 edition = "2021"
 description = "Local PostgreSQL wire-protocol proxy that translates queries into AWS RDS Data API calls."
-license = "MIT OR Apache-2.0"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/svarba/pg-rds-connector"
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
