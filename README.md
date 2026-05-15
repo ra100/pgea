@@ -49,7 +49,7 @@ Adding any of these requires updating the spec first.
 
 ## Install
 
-One-liner (macOS arm64/x86_64, Linux x86_64):
+One-liner (macOS arm64, Linux x86_64; Intel Macs run the arm64 binary under Rosetta 2 or build from source):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ra100/pgea/main/install.sh | bash
@@ -80,8 +80,9 @@ cargo build --release
 # binary lands in target/release/pgea
 ```
 
-Prebuilt macOS (arm64 / x86_64) and Linux (x86_64) binaries are attached to
-each tagged GitHub release.
+Prebuilt macOS (arm64) and Linux (x86_64) binaries are attached to each
+tagged GitHub release. Intel Mac users can run the arm64 binary under
+Rosetta 2 or build from source via `cargo install --git`.
 
 ## Configure
 

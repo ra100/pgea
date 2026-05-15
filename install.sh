@@ -40,7 +40,7 @@ detect_target() {
     Darwin)
       case "$arch" in
         arm64|aarch64) echo "aarch64-apple-darwin" ;;
-        x86_64)        echo "x86_64-apple-darwin" ;;
+        x86_64) die "macOS x86_64 is not built; use Rosetta with the arm64 binary, or build from source" ;;
         *) die "unsupported macOS arch: $arch" ;;
       esac
       ;;
@@ -57,9 +57,24 @@ detect_target() {
 
 resolve_latest() {
   # Resolve the GitHub "releases/latest" redirect to a tag without hitting the API.
-  local url
+  # When no Release is published, GitHub redirects to /releases (no /tag/ segment);
+  # detect that and fall back to the API.
+  local url tag
   url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")"
-  echo "${url##*/}"
+  case "$url" in
+    */releases/tag/*) tag="${url##*/}" ;;
+    *) tag="" ;;
+  esac
+  if [ -z "$tag" ]; then
+    # Tolerate failure: API returns 404 when no Release exists, and `head` closing
+    # the pipe early would also trip `set -o pipefail`.
+    tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+      | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1 || true)"
+  fi
+  if [ -z "$tag" ]; then
+    die "no published release found for ${REPO}. Set PGEA_VERSION=vX.Y.Z (see https://github.com/${REPO}/releases) or wait for one to be published."
+  fi
+  echo "$tag"
 }
 
 verify_sha() {

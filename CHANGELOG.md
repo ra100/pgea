@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Release workflow no longer builds `x86_64-apple-darwin`. Intel Macs run the
+  `aarch64-apple-darwin` binary under Rosetta 2, or build from source.
+- `install.sh` resolves `releases/latest` more robustly: falls back to the
+  GitHub API when no Release is published yet, and fails with an actionable
+  message instead of `tag must start with 'v' (got: releases)`.
+
 ## [0.1.0] - 2026-05-15
 
 Initial release of `pgea` — a local TCP proxy that speaks the PostgreSQL wire
