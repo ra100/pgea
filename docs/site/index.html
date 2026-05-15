@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>pgea — PostgreSQL wire proxy for AWS RDS Data API</title>
+  <meta name="description" content="Local TCP proxy that lets ordinary PostgreSQL GUIs talk to private-VPC Aurora clusters via the AWS RDS Data API." />
+  <meta property="og:title" content="pgea — Postgres wire proxy for RDS Data API" />
+  <meta property="og:description" content="Use DBeaver, DataGrip, TablePlus, or psql against private-VPC Aurora — no bastion, no VPN." />
+  <meta property="og:type" content="website" />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="hero">
+    <nav class="nav">
+      <a class="brand" href="#top">
+        <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true">
+          <circle cx="16" cy="16" r="14" fill="#0ea5e9" />
+          <text x="16" y="21" text-anchor="middle" font-family="ui-monospace,monospace" font-size="14" font-weight="700" fill="#fff">pg</text>
+        </svg>
+        <span>pgea</span>
+      </a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#install">Install</a>
+        <a href="#configure">Configure</a>
+        <a href="#status">Status</a>
+        <a href="https://github.com/svarba/pg-rds-connector" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </nav>
+
+    <div class="hero-inner" id="top">
+      <span class="badge">Rust · single binary · loopback only</span>
+      <h1>Talk to private-VPC Aurora<br/>with your favorite Postgres GUI.</h1>
+      <p class="lede">
+        <strong>pgea</strong> is a local TCP proxy that speaks the PostgreSQL wire protocol
+        on the client side and translates queries into <a href="https://docs.aws.amazon.com/rdsdataservice/latest/APIReference/Welcome.html" target="_blank" rel="noopener">AWS RDS Data API</a> calls on the backend.
+        No bastion. No VPN. No port-forwarding.
+      </p>
+      <div class="cta">
+        <a class="btn primary" href="#install">Install</a>
+        <a class="btn ghost" href="https://github.com/svarba/pg-rds-connector" target="_blank" rel="noopener">View on GitHub</a>
+      </div>
+
+      <pre class="codeblock"><code><span class="prompt">$</span> psql -h 127.0.0.1 -p 15000 -d playground_uat -U postgres -W
+psql (16.2)
+Type "help" for help.
+
+playground_uat=&gt; <span class="kw">SELECT</span> now();
+              now
+-------------------------------
+ 2026-05-15 14:22:31.402+00:00
+(1 row)</code></pre>
+    </div>
+  </header>
+
+  <main>
+    <section id="features" class="section">
+      <h2>What it does</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Wire-level Postgres</h3>
+          <p>Simple + Extended query, transaction verbs, <code>$N</code> parameter rewriting, prepared statements, portals.</p>
+        </div>
+        <div class="card">
+          <h3>RDS Data API backend</h3>
+          <p>Each query becomes <code>ExecuteStatement</code> / <code>BeginTransaction</code> / <code>CommitTransaction</code> against your Aurora cluster.</p>
+        </div>
+        <div class="card">
+          <h3>GUI-friendly</h3>
+          <p>Targeted catalog rewrites keep DBeaver, DataGrip, TablePlus, and <code>psql \d</code> introspection working.</p>
+        </div>
+        <div class="card">
+          <h3>Standard AWS auth</h3>
+          <p>Credentials come from <code>AWS_PROFILE</code>, env, SSO, or IMDS. Per-target overrides via the pg <code>password</code> field.</p>
+        </div>
+        <div class="card">
+          <h3>Many targets, one proxy</h3>
+          <p>Named targets in <code>~/.config/pgea/config.toml</code>. The pg <code>dbname</code> picks the cluster.</p>
+        </div>
+        <div class="card">
+          <h3>Lazy credential resolve</h3>
+          <p>Stale SSO on nine of ten targets won't break the fresh one — creds resolve on first connection.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="install" class="section alt">
+      <h2>Install</h2>
+      <p>One-liner (macOS arm64, Linux x86_64):</p>
+      <pre class="codeblock"><code>curl -fsSL https://raw.githubusercontent.com/svarba/pg-rds-connector/main/install.sh | bash</code></pre>
+
+      <p>Pin a version:</p>
+      <pre class="codeblock"><code>PGEA_VERSION=v0.1.1 curl -fsSL https://raw.githubusercontent.com/svarba/pg-rds-connector/main/install.sh | bash</code></pre>
+
+      <p>From source:</p>
+      <pre class="codeblock"><code>cargo install --git https://github.com/svarba/pg-rds-connector</code></pre>
+
+      <p>Update later:</p>
+      <pre class="codeblock"><code>pgea self-update</code></pre>
+    </section>
+
+    <section id="configure" class="section">
+      <h2>Configure</h2>
+      <p>Drop a TOML file at <code>~/.config/pgea/config.toml</code>:</p>
+      <pre class="codeblock"><code><span class="kw">listen</span>          = <span class="str">"127.0.0.1:15000"</span>
+<span class="kw">default_profile</span> = <span class="str">"default"</span>
+
+<span class="sect">[targets.playground_uat]</span>
+<span class="kw">profile</span>     = <span class="str">"uat"</span>
+<span class="kw">region</span>      = <span class="str">"us-east-1"</span>
+<span class="kw">cluster_arn</span> = <span class="str">"arn:aws:rds:us-east-1:123456789012:cluster:my-cluster"</span>
+<span class="kw">secret_arn</span>  = <span class="str">"arn:aws:secretsmanager:us-east-1:123456789012:secret:my-cluster-credentials-XXXXXX"</span>
+<span class="kw">database</span>    = <span class="str">"appdb"</span></code></pre>
+
+      <p>Then run:</p>
+      <pre class="codeblock"><code>pgea --config ~/.config/pgea/config.toml</code></pre>
+
+      <p>Connect with any pg client. The <code>dbname</code> selects the target; the <code>password</code> field is repurposed as an optional AWS profile override.</p>
+    </section>
+
+    <section id="status" class="section alt">
+      <h2>Status</h2>
+      <p>Early — v1 covers connection routing, Simple + Extended Query, transaction verbs, and a focused set of catalog rewrites for GUI introspection.</p>
+      <h3>Not yet supported</h3>
+      <ul class="bullets">
+        <li><code>COPY</code>, server-side cursors, <code>LISTEN</code> / <code>NOTIFY</code>, <code>SAVEPOINT</code></li>
+        <li>Multi-statement Simple Query</li>
+        <li>Auto-pagination around the Data API 1 MB result cap</li>
+        <li>TLS to client (loopback only)</li>
+        <li>Prepared-statement caching across sessions</li>
+      </ul>
+      <p>See the <a href="https://github.com/svarba/pg-rds-connector/blob/main/docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md" target="_blank" rel="noopener">design spec</a> for full scope and rationale.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>MIT licensed · <a href="https://github.com/svarba/pg-rds-connector" target="_blank" rel="noopener">github.com/svarba/pg-rds-connector</a></p>
+  </footer>
+</body>
+</html>
