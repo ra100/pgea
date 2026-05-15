@@ -45,7 +45,7 @@ Per-pg-connection state lives in a Tokio task and holds: resolved target (cluste
 
 ### Configuration
 
-Config file at `~/.config/pg-rds-connector/config.toml` (override via `--config`). Targets are named; pg `dbname` selects the target. The pg `password` field is repurposed as an AWS profile-name override (empty falls back to the target's `profile`, then `default_profile`). Validation at startup is structural only (TOML, ARN regex, dup names, `listen` parses) — credentials are resolved lazily on first connection so a config with stale SSO sessions for nine of ten targets still serves the fresh one.
+Config file at `~/.config/pgea/config.toml` (override via `--config`). Targets are named; pg `dbname` selects the target. The pg `password` field is repurposed as an AWS profile-name override (empty falls back to the target's `profile`, then `default_profile`). Validation at startup is structural only (TOML, ARN regex, dup names, `listen` parses) — credentials are resolved lazily on first connection so a config with stale SSO sessions for nine of ten targets still serves the fresh one.
 
 ## Conventions
 

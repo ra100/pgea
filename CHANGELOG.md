@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-15
+
 ### Changed
 
+- Default config path renamed from `~/.config/pg-rds-connector/config.toml`
+  to `~/.config/pgea/config.toml`. Existing users must move their config
+  file (or pass `--config <path>` / set `PG_RDS_CONNECTOR_CONFIG`).
 - Release workflow no longer builds `x86_64-apple-darwin`. Intel Macs run the
   `aarch64-apple-darwin` binary under Rosetta 2, or build from source.
 - `install.sh` resolves `releases/latest` more robustly: falls back to the
@@ -64,5 +69,6 @@ can be used against Aurora PostgreSQL clusters that live in private VPCs.
 - Full design spec under `docs/superpowers/specs/`.
 - `Plans.md` milestone breakdown (M1–M7).
 
-[Unreleased]: https://github.com/ra100/pgea/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ra100/pgea/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/ra100/pgea/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ra100/pgea/releases/tag/v0.1.0

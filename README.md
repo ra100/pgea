@@ -86,7 +86,7 @@ Rosetta 2 or build from source via `cargo install --git`.
 
 ## Configure
 
-Create `~/.config/pg-rds-connector/config.toml`:
+Create `~/.config/pgea/config.toml`:
 
 ```toml
 listen          = "127.0.0.1:15000"

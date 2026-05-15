@@ -18,7 +18,7 @@ const INSTALL_URL: &str = "https://raw.githubusercontent.com/ra100/pgea/main/ins
     version
 )]
 struct Cli {
-    /// Path to TOML config file. Defaults to ~/.config/pg-rds-connector/config.toml.
+    /// Path to TOML config file. Defaults to ~/.config/pgea/config.toml.
     #[arg(short, long, env = "PG_RDS_CONNECTOR_CONFIG", global = true)]
     config: Option<PathBuf>,
 
@@ -105,7 +105,7 @@ fn main() -> ExitCode {
 fn default_config_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     let mut p = PathBuf::from(home);
-    p.push(".config/pg-rds-connector/config.toml");
+    p.push(".config/pgea/config.toml");
     Some(p)
 }
 

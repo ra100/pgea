@@ -33,7 +33,7 @@ A local proxy that speaks the PostgreSQL wire protocol on one side and the AWS R
 │ psql etc │           │  127.0.0.1:5433         │         │ (AWS)        │
 └──────────┘           └─────────────────────────┘         └──────────────┘
                               │
-                              └─ ~/.config/pg-rds-connector/config.toml
+                              └─ ~/.config/pgea/config.toml
 ```
 
 - Single Rust binary, Tokio async runtime.
@@ -88,7 +88,7 @@ External crates:
 
 ## Configuration
 
-File location: `~/.config/pg-rds-connector/config.toml` (override via `--config <path>`).
+File location: `~/.config/pgea/config.toml` (override via `--config <path>`).
 
 ```toml
 listen          = "127.0.0.1:5433"
