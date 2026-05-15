@@ -5,18 +5,24 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>404 — pgea</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Spectral:ital,wght@0,400;0,500;1,400;1,500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header class="hero">
+  <div class="shell">
     <nav class="nav">
-      <a class="brand" href="/"><span>pgea</span></a>
+      <a class="brand" href="/"><span class="dot" aria-hidden="true"></span>pgea</a>
+      <div class="nav-links">
+        <a href="/">Home</a>
+      </div>
     </nav>
-    <div class="hero-inner" style="text-align:center;">
-      <span class="badge">404</span>
-      <h1>This page wandered into a private VPC.</h1>
-      <p class="lede">No bastion this time. <a href="/">Head back home</a>.</p>
-    </div>
-  </header>
+    <header class="masthead">
+      <div class="kicker">error / no. 404</div>
+      <h1 class="title">Whatever you were looking for <em>isn't here.</em></h1>
+      <p class="lede">Maybe it's in a private VPC. <a href="/">Go home</a>.</p>
+    </header>
+  </div>
 </body>
 </html>

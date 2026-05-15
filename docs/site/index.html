@@ -3,44 +3,42 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>pgea — PostgreSQL wire proxy for AWS RDS Data API</title>
-  <meta name="description" content="Local TCP proxy that lets ordinary PostgreSQL GUIs talk to private-VPC Aurora clusters via the AWS RDS Data API." />
-  <meta property="og:title" content="pgea — Postgres wire proxy for RDS Data API" />
-  <meta property="og:description" content="Use DBeaver, DataGrip, TablePlus, or psql against private-VPC Aurora — no bastion, no VPN." />
+  <title>pgea — Postgres GUI access to private-VPC Aurora</title>
+  <meta name="description" content="A local proxy that translates Postgres wire traffic into AWS RDS Data API calls, so DBeaver and psql can reach Aurora clusters with no public endpoint." />
+  <meta property="og:title" content="pgea" />
+  <meta property="og:description" content="Postgres clients on your laptop, RDS Data API on the wire. Useful when the cluster lives in a private VPC and a bastion is overkill." />
   <meta property="og:type" content="website" />
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Spectral:ital,wght@0,400;0,500;0,600;1,400;1,500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header class="hero">
-    <nav class="nav">
-      <a class="brand" href="#top">
-        <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true">
-          <circle cx="16" cy="16" r="14" fill="#0ea5e9" />
-          <text x="16" y="21" text-anchor="middle" font-family="ui-monospace,monospace" font-size="14" font-weight="700" fill="#fff">pg</text>
-        </svg>
-        <span>pgea</span>
-      </a>
+  <div class="shell">
+    <nav class="nav" id="top">
+      <a class="brand" href="#top"><span class="dot" aria-hidden="true"></span>pgea</a>
       <div class="nav-links">
-        <a href="#features">Features</a>
+        <a href="#what">What</a>
         <a href="#install">Install</a>
         <a href="#configure">Configure</a>
         <a href="#status">Status</a>
-        <a href="https://github.com/ra100/pgea" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/ra100/pgea" target="_blank" rel="noopener">Source</a>
       </div>
     </nav>
 
-    <div class="hero-inner" id="top">
-      <span class="badge">Rust · single binary · loopback only</span>
-      <h1>Talk to private-VPC Aurora<br/>with your favorite Postgres GUI.</h1>
+    <header class="masthead">
+      <div class="kicker">a small Postgres proxy / no. 001</div>
+      <h1 class="title">Your Postgres client, talking to <em>private-VPC&nbsp;Aurora.</em></h1>
       <p class="lede">
-        <strong>pgea</strong> is a local TCP proxy that speaks the PostgreSQL wire protocol
-        on the client side and translates queries into <a href="https://docs.aws.amazon.com/rdsdataservice/latest/APIReference/Welcome.html" target="_blank" rel="noopener">AWS RDS Data API</a> calls on the backend.
-        No bastion. No VPN. No port-forwarding.
+        <strong>pgea</strong> listens on localhost as a Postgres server, then forwards every query to the
+        <a href="https://docs.aws.amazon.com/rdsdataservice/latest/APIReference/Welcome.html" target="_blank" rel="noopener">AWS&nbsp;RDS&nbsp;Data&nbsp;API</a>.
+        If your Aurora cluster has no public endpoint and you don't want to keep a bastion or VPN running just to poke at it,
+        that's the gap this fills.
       </p>
       <div class="cta">
         <a class="btn primary" href="#install">Install</a>
-        <a class="btn ghost" href="https://github.com/ra100/pgea" target="_blank" rel="noopener">View on GitHub</a>
+        <a class="btn" href="https://github.com/ra100/pgea" target="_blank" rel="noopener">Source on GitHub</a>
       </div>
 
       <pre class="codeblock"><code><span class="prompt">$</span> psql -h 127.0.0.1 -p 15000 -d playground_uat -U postgres -W
@@ -52,58 +50,83 @@ playground_uat=&gt; <span class="kw">SELECT</span> now();
 -------------------------------
  2026-05-15 14:22:31.402+00:00
 (1 row)</code></pre>
-    </div>
-  </header>
+    </header>
 
-  <main>
-    <section id="features" class="section">
-      <h2>What it does</h2>
-      <div class="grid">
-        <div class="card">
-          <h3>Wire-level Postgres</h3>
-          <p>Simple + Extended query, transaction verbs, <code>$N</code> parameter rewriting, prepared statements, portals.</p>
-        </div>
-        <div class="card">
-          <h3>RDS Data API backend</h3>
-          <p>Each query becomes <code>ExecuteStatement</code> / <code>BeginTransaction</code> / <code>CommitTransaction</code> against your Aurora cluster.</p>
-        </div>
-        <div class="card">
-          <h3>GUI-friendly</h3>
-          <p>Targeted catalog rewrites keep DBeaver, DataGrip, TablePlus, and <code>psql \d</code> introspection working.</p>
-        </div>
-        <div class="card">
-          <h3>Standard AWS auth</h3>
-          <p>Credentials come from <code>AWS_PROFILE</code>, env, SSO, or IMDS. Per-target overrides via the pg <code>password</code> field.</p>
-        </div>
-        <div class="card">
-          <h3>Many targets, one proxy</h3>
-          <p>Named targets in <code>~/.config/pgea/config.toml</code>. The pg <code>dbname</code> picks the cluster.</p>
-        </div>
-        <div class="card">
-          <h3>Lazy credential resolve</h3>
-          <p>Stale SSO on nine of ten targets won't break the fresh one — creds resolve on first connection.</p>
-        </div>
+    <section class="section" id="what">
+      <div class="section-head">
+        <span class="section-num">i.</span>
+        <h2>What's inside</h2>
       </div>
+      <ol class="specs">
+        <li>
+          <span class="n">01</span>
+          <div>
+            <h3>Speaks Postgres wire</h3>
+            <p>Simple and Extended query, transactions, <code>$N</code> parameter rewriting, prepared statements, portals. Anything your client already knows how to send.</p>
+          </div>
+        </li>
+        <li>
+          <span class="n">02</span>
+          <div>
+            <h3>RDS Data API on the back</h3>
+            <p>Queries turn into <code>ExecuteStatement</code> calls. <code>BEGIN</code> / <code>COMMIT</code> / <code>ROLLBACK</code> map to the matching transaction calls.</p>
+          </div>
+        </li>
+        <li>
+          <span class="n">03</span>
+          <div>
+            <h3>Plays nicely with GUIs</h3>
+            <p>The Data API refuses some catalog queries DBeaver and DataGrip rely on. pgea rewrites those specific ones so introspection still works.</p>
+          </div>
+        </li>
+        <li>
+          <span class="n">04</span>
+          <div>
+            <h3>Reuses your AWS setup</h3>
+            <p>Credentials come from the standard chain: <code>AWS_PROFILE</code>, env, SSO, IMDS. The pg <code>password</code> field becomes a per-connection profile override.</p>
+          </div>
+        </li>
+        <li>
+          <span class="n">05</span>
+          <div>
+            <h3>Many clusters, one proxy</h3>
+            <p>Each cluster is a named target in <code>~/.config/pgea/config.toml</code>. Pick one by setting <code>dbname</code> in your client.</p>
+          </div>
+        </li>
+        <li>
+          <span class="n">06</span>
+          <div>
+            <h3>Doesn't fail loudly</h3>
+            <p>Credentials resolve on the first connection to a target, not at startup. A stale SSO session for one cluster won't stop you from using another.</p>
+          </div>
+        </li>
+      </ol>
     </section>
 
-    <section id="install" class="section alt">
-      <h2>Install</h2>
-      <p>One-liner (macOS arm64, Linux x86_64):</p>
+    <section class="section" id="install">
+      <div class="section-head">
+        <span class="section-num">ii.</span>
+        <h2>Install</h2>
+      </div>
+      <p>Prebuilt binaries for macOS arm64 and Linux x86_64. The script drops <code>pgea</code> into <code>$HOME/.local/bin</code>:</p>
       <pre class="codeblock"><code>curl -fsSL https://raw.githubusercontent.com/ra100/pgea/main/install.sh | bash</code></pre>
 
-      <p>Pin a version:</p>
+      <p>If you want a specific version, pass it in:</p>
       <pre class="codeblock"><code>PGEA_VERSION=v0.1.1 curl -fsSL https://raw.githubusercontent.com/ra100/pgea/main/install.sh | bash</code></pre>
 
-      <p>From source:</p>
+      <p>Or build from source if you'd rather not run a curl-bash:</p>
       <pre class="codeblock"><code>cargo install --git https://github.com/ra100/pgea</code></pre>
 
-      <p>Update later:</p>
+      <p>Updating later is just:</p>
       <pre class="codeblock"><code>pgea self-update</code></pre>
     </section>
 
-    <section id="configure" class="section">
-      <h2>Configure</h2>
-      <p>Drop a TOML file at <code>~/.config/pgea/config.toml</code>:</p>
+    <section class="section" id="configure">
+      <div class="section-head">
+        <span class="section-num">iii.</span>
+        <h2>Configure</h2>
+      </div>
+      <p>Put a TOML file at <code>~/.config/pgea/config.toml</code>. One <code>[targets.NAME]</code> block per Aurora cluster:</p>
       <pre class="codeblock"><code><span class="kw">listen</span>          = <span class="str">"127.0.0.1:15000"</span>
 <span class="kw">default_profile</span> = <span class="str">"default"</span>
 
@@ -114,29 +137,33 @@ playground_uat=&gt; <span class="kw">SELECT</span> now();
 <span class="kw">secret_arn</span>  = <span class="str">"arn:aws:secretsmanager:us-east-1:123456789012:secret:my-cluster-credentials-XXXXXX"</span>
 <span class="kw">database</span>    = <span class="str">"appdb"</span></code></pre>
 
-      <p>Then run:</p>
+      <p>Then start it:</p>
       <pre class="codeblock"><code>pgea --config ~/.config/pgea/config.toml</code></pre>
 
-      <p>Connect with any pg client. The <code>dbname</code> selects the target; the <code>password</code> field is repurposed as an optional AWS profile override.</p>
+      <p>Connect with any Postgres client. The <code>dbname</code> picks which target you hit. The <code>password</code> field, if you set it, overrides the AWS profile for that connection.</p>
     </section>
 
-    <section id="status" class="section alt">
-      <h2>Status</h2>
-      <p>Early — v1 covers connection routing, Simple + Extended Query, transaction verbs, and a focused set of catalog rewrites for GUI introspection.</p>
-      <h3>Not yet supported</h3>
+    <section class="section" id="status">
+      <div class="section-head">
+        <span class="section-num">iv.</span>
+        <h2>Status</h2>
+      </div>
+      <p>Early. v1 handles connection routing, Simple and Extended Query, transactions, and the few catalog rewrites GUIs need to introspect a database.</p>
+      <h3>What it doesn't do yet</h3>
       <ul class="bullets">
-        <li><code>COPY</code>, server-side cursors, <code>LISTEN</code> / <code>NOTIFY</code>, <code>SAVEPOINT</code></li>
-        <li>Multi-statement Simple Query</li>
-        <li>Auto-pagination around the Data API 1 MB result cap</li>
-        <li>TLS to client (loopback only)</li>
-        <li>Prepared-statement caching across sessions</li>
+        <li><code>COPY</code>, server-side cursors, <code>LISTEN</code> / <code>NOTIFY</code>, <code>SAVEPOINT</code>.</li>
+        <li>Multi-statement Simple Query.</li>
+        <li>Pagination around the Data API's 1 MB result cap. Big result sets get truncated.</li>
+        <li>TLS between the client and pgea. It only listens on <code>127.0.0.1</code>.</li>
+        <li>Caching prepared statements across sessions.</li>
       </ul>
-      <p>See the <a href="https://github.com/ra100/pgea/blob/main/docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md" target="_blank" rel="noopener">design spec</a> for full scope and rationale.</p>
+      <p>The <a href="https://github.com/ra100/pgea/blob/main/docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md" target="_blank" rel="noopener">design spec</a> has the full scope and the reasoning behind what's in v1 and what isn't.</p>
     </section>
-  </main>
 
-  <footer class="footer">
-    <p>MIT licensed · <a href="https://github.com/ra100/pgea" target="_blank" rel="noopener">github.com/ra100/pgea</a></p>
-  </footer>
+    <footer class="footer">
+      <span>MIT licensed.</span>
+      <span>Source: <a href="https://github.com/ra100/pgea" target="_blank" rel="noopener">github.com/ra100/pgea</a></span>
+    </footer>
+  </div>
 </body>
 </html>
