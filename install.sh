@@ -91,8 +91,12 @@ verify_sha() {
   [ "$expected" = "$actual" ] || die "sha256 mismatch: expected $expected, got $actual"
 }
 
+tmp=""
+cleanup() { [ -n "${tmp:-}" ] && rm -rf "$tmp"; }
+trap cleanup EXIT
+
 main() {
-  local target tag asset_url sha_url tmp archive bin_path
+  local target tag asset_url sha_url archive bin_path
 
   target="$(detect_target)"
   tag="${VERSION:-$(resolve_latest)}"
@@ -108,7 +112,6 @@ main() {
   sha_url="${asset_url}.sha256"
 
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
 
   archive="${tmp}/pgea.tar.gz"
   log "fetching $asset_url"
