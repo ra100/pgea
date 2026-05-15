@@ -1,32 +1,47 @@
 use std::path::PathBuf;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::sync::Arc;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use pg_rds_connector::config::Config;
 use pg_rds_connector::pg::server;
 
+const INSTALL_URL: &str = "https://raw.githubusercontent.com/ra100/pgea/main/install.sh";
+
 #[derive(Debug, Parser)]
 #[command(
-    name = "pg-rds-connector",
+    name = "pgea",
     about = "Local PostgreSQL wire-protocol proxy for AWS RDS Data API",
     version
 )]
 struct Cli {
     /// Path to TOML config file. Defaults to ~/.config/pg-rds-connector/config.toml.
-    #[arg(short, long, env = "PG_RDS_CONNECTOR_CONFIG")]
+    #[arg(short, long, env = "PG_RDS_CONNECTOR_CONFIG", global = true)]
     config: Option<PathBuf>,
 
     /// Override the listen address (e.g. 127.0.0.1:5433).
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     listen: Option<String>,
 
     /// Override log level (e.g. info, debug, trace).
-    #[arg(long, env = "PG_RDS_CONNECTOR_LOG")]
+    #[arg(long, env = "PG_RDS_CONNECTOR_LOG", global = true)]
     log_level: Option<String>,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    /// Update pgea to the latest GitHub release.
+    SelfUpdate {
+        /// Pin to a specific version tag (e.g. v0.2.0).
+        #[arg(long)]
+        tag: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -36,6 +51,10 @@ fn main() -> ExitCode {
         EnvFilter::new(cli.log_level.clone().unwrap_or_else(|| "info".to_string()))
     });
     tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    if let Some(Commands::SelfUpdate { tag }) = cli.command.as_ref() {
+        return run_self_update(tag.as_deref());
+    }
 
     let config_path = match cli.config.clone().or_else(default_config_path) {
         Some(path) => path,
@@ -88,4 +107,45 @@ fn default_config_path() -> Option<PathBuf> {
     let mut p = PathBuf::from(home);
     p.push(".config/pg-rds-connector/config.toml");
     Some(p)
+}
+
+fn run_self_update(tag: Option<&str>) -> ExitCode {
+    let pipeline = match tag {
+        Some(t) => format!(
+            "curl -fsSL {url} | PGEA_VERSION={tag} bash",
+            url = INSTALL_URL,
+            tag = shell_escape(t)
+        ),
+        None => format!("curl -fsSL {url} | bash", url = INSTALL_URL),
+    };
+
+    info!("running: {pipeline}");
+
+    let status = Command::new("sh").arg("-c").arg(&pipeline).status();
+
+    match status {
+        Ok(s) if s.success() => ExitCode::SUCCESS,
+        Ok(s) => {
+            error!(code = ?s.code(), "self-update failed");
+            ExitCode::from(1)
+        }
+        Err(e) => {
+            error!(%e, "failed to spawn installer");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn shell_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
 }

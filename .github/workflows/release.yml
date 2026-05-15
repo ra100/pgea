@@ -55,11 +55,11 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
-          name="pg-rds-connector-${tag}-${{ matrix.target }}"
+          name="pgea-${tag}-${{ matrix.target }}"
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/pg-rds-connector" "dist/pg-rds-connector"
+          cp "target/${{ matrix.target }}/release/pgea" "dist/pgea"
           cp README.md LICENSE dist/
-          tar -C dist -czf "${name}.tar.gz" pg-rds-connector README.md LICENSE
+          tar -C dist -czf "${name}.tar.gz" pgea README.md LICENSE
           shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
           echo "archive=${name}.tar.gz" >> "$GITHUB_OUTPUT"
           echo "checksum=${name}.tar.gz.sha256" >> "$GITHUB_OUTPUT"

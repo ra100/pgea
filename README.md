@@ -49,10 +49,27 @@ Adding any of these requires updating the spec first.
 
 ## Install
 
+One-liner (macOS arm64/x86_64, Linux x86_64):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ra100/pgea/main/install.sh | bash
+```
+
+The installer downloads the latest tagged release, verifies the SHA-256
+checksum, and installs `pgea` into `$HOME/.local/bin` (override with
+`PGEA_BIN_DIR`). Pin a version with `PGEA_VERSION=v0.2.0`.
+
+Update later with either:
+
+```sh
+pgea self-update                     # in-place upgrade
+curl -fsSL https://raw.githubusercontent.com/ra100/pgea/main/install.sh | bash
+```
+
 From source via cargo:
 
 ```sh
-cargo install --git https://github.com/svarba/pg-rds-connector
+cargo install --git https://github.com/ra100/pgea
 # binary lands in ~/.cargo/bin/pgea
 ```
 
@@ -64,7 +81,7 @@ cargo build --release
 ```
 
 Prebuilt macOS (arm64 / x86_64) and Linux (x86_64) binaries are attached to
-each tagged GitHub release. Download, `chmod +x`, drop into your `PATH`.
+each tagged GitHub release.
 
 ## Configure
 
