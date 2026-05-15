@@ -445,7 +445,11 @@ impl Connection {
             };
         }
 
-        let pg_type = portal.statement.parameter_types.get(idx);
+        let pg_type = portal
+            .statement
+            .parameter_types
+            .get(idx)
+            .and_then(|t| t.as_ref());
         if let Some(decoded) = pg_type.and_then(|t| decode_binary_scalar(t, bytes)) {
             return AwsField::StringValue(decoded);
         }
@@ -657,11 +661,15 @@ impl ExtendedQueryHandler for Connection {
         // rewriter and report each as `Type::UNKNOWN` — Postgres' standard
         // way to ask the server to pick a binding-time type, which is the
         // closest we can do without a live db to do real inference.
-        let param_types = if statement.parameter_types.is_empty() {
+        let param_types: Vec<Type> = if statement.parameter_types.is_empty() {
             let rewritten = rewriter::rewrite(statement.statement.as_str());
             vec![Type::UNKNOWN; rewritten.params.len()]
         } else {
-            statement.parameter_types.clone()
+            statement
+                .parameter_types
+                .iter()
+                .map(|t| t.clone().unwrap_or(Type::UNKNOWN))
+                .collect()
         };
         Ok(DescribeStatementResponse::new(param_types, vec![]))
     }
@@ -770,7 +778,7 @@ fn response_from_output(sql: &str, out: ExecuteOutput) -> Response {
             };
             enc.encode_field(&v)?;
         }
-        enc.finish()
+        Ok(enc.take_row())
     });
 
     let stream = stream::iter(row_iter);
