@@ -26,7 +26,7 @@
         <a href="#install">Install</a>
         <a href="#configure">Configure</a>
         <a href="#status">Status</a>
-        <a href="https://github.com/svarba/pg-rds-connector" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/ra100/pgea" target="_blank" rel="noopener">GitHub</a>
       </div>
     </nav>
 
@@ -40,7 +40,7 @@
       </p>
       <div class="cta">
         <a class="btn primary" href="#install">Install</a>
-        <a class="btn ghost" href="https://github.com/svarba/pg-rds-connector" target="_blank" rel="noopener">View on GitHub</a>
+        <a class="btn ghost" href="https://github.com/ra100/pgea" target="_blank" rel="noopener">View on GitHub</a>
       </div>
 
       <pre class="codeblock"><code><span class="prompt">$</span> psql -h 127.0.0.1 -p 15000 -d playground_uat -U postgres -W
@@ -89,13 +89,13 @@ playground_uat=&gt; <span class="kw">SELECT</span> now();
     <section id="install" class="section alt">
       <h2>Install</h2>
       <p>One-liner (macOS arm64, Linux x86_64):</p>
-      <pre class="codeblock"><code>curl -fsSL https://raw.githubusercontent.com/svarba/pg-rds-connector/main/install.sh | bash</code></pre>
+      <pre class="codeblock"><code>curl -fsSL https://raw.githubusercontent.com/ra100/pgea/main/install.sh | bash</code></pre>
 
       <p>Pin a version:</p>
-      <pre class="codeblock"><code>PGEA_VERSION=v0.1.1 curl -fsSL https://raw.githubusercontent.com/svarba/pg-rds-connector/main/install.sh | bash</code></pre>
+      <pre class="codeblock"><code>PGEA_VERSION=v0.1.1 curl -fsSL https://raw.githubusercontent.com/ra100/pgea/main/install.sh | bash</code></pre>
 
       <p>From source:</p>
-      <pre class="codeblock"><code>cargo install --git https://github.com/svarba/pg-rds-connector</code></pre>
+      <pre class="codeblock"><code>cargo install --git https://github.com/ra100/pgea</code></pre>
 
       <p>Update later:</p>
       <pre class="codeblock"><code>pgea self-update</code></pre>
@@ -131,12 +131,12 @@ playground_uat=&gt; <span class="kw">SELECT</span> now();
         <li>TLS to client (loopback only)</li>
         <li>Prepared-statement caching across sessions</li>
       </ul>
-      <p>See the <a href="https://github.com/svarba/pg-rds-connector/blob/main/docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md" target="_blank" rel="noopener">design spec</a> for full scope and rationale.</p>
+      <p>See the <a href="https://github.com/ra100/pgea/blob/main/docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md" target="_blank" rel="noopener">design spec</a> for full scope and rationale.</p>
     </section>
   </main>
 
   <footer class="footer">
-    <p>MIT licensed · <a href="https://github.com/svarba/pg-rds-connector" target="_blank" rel="noopener">github.com/svarba/pg-rds-connector</a></p>
+    <p>MIT licensed · <a href="https://github.com/ra100/pgea" target="_blank" rel="noopener">github.com/ra100/pgea</a></p>
   </footer>
 </body>
 </html>
