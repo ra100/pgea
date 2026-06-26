@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # On a tag push this is the tag; on a workflow_dispatch (used by
           # autotag.yml) github.ref is the branch, so check out the tag input.
