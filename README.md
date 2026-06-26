@@ -83,6 +83,14 @@ Prebuilt macOS (arm64) and Linux (x86_64) binaries are attached to each
 tagged GitHub release. Intel Mac users can run the arm64 binary under
 Rosetta 2 or build from source via `cargo install --git`.
 
+### Releasing (maintainers)
+
+Releases are automated. Bump `version` in `Cargo.toml`, update `CHANGELOG.md`,
+and merge to `main`. The `autotag` workflow creates and pushes the matching
+`vX.Y.Z` tag, then `release` builds the binaries and publishes the GitHub
+Release (marked latest, which is what `pgea self-update` pulls). No manual
+tagging needed.
+
 ## Configure
 
 Create `~/.config/pgea/config.toml`:

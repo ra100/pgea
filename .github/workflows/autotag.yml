@@ -1,0 +1,62 @@
+name: autotag
+
+# Auto-create a vX.Y.Z tag + release whenever Cargo.toml's version changes on
+# main. Release flow becomes: bump version in Cargo.toml -> merge to main ->
+# tag + release happen automatically.
+#
+# A tag pushed with the default GITHUB_TOKEN does NOT trigger release.yml's
+# `on: push: tags` (GitHub blocks token-pushed events from triggering further
+# workflows). So we push the tag for history AND dispatch release.yml directly
+# via `gh workflow run`, which does run from GITHUB_TOKEN.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+
+permissions:
+  contents: write
+  actions: write # to dispatch release.yml
+
+concurrency:
+  group: autotag
+  cancel-in-progress: false
+
+jobs:
+  autotag:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # need tags to check for an existing one
+
+      - name: Tag and release if version changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ -z "$version" ]; then
+            echo "could not read version from Cargo.toml" >&2
+            exit 1
+          fi
+          tag="v${version}"
+          echo "Cargo.toml version: $version -> tag $tag"
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "tag ${tag} already exists; nothing to do."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "$tag"
+          git push origin "$tag"
+          echo "pushed $tag"
+
+          # Token-pushed tags don't trigger release.yml's tag listener, so kick
+          # it off explicitly with the tag as input.
+          gh workflow run release.yml -f tag="$tag"
+          echo "dispatched release.yml for $tag"
