@@ -41,7 +41,6 @@ Not yet supported:
 
 - `COPY`, server-side cursors, `LISTEN` / `NOTIFY`, `SAVEPOINT`
 - Multi-statement Simple Query
-- Auto-pagination around the Data API 1 MB result cap
 - TLS to the client (loopback only)
 - Prepared-statement caching across sessions
 
@@ -198,9 +197,14 @@ protocol.
 
 ## Constraints worth knowing
 
-- **1 MB result cap.** The Data API returns at most 1 MB per
-  `ExecuteStatement`. Large `SELECT *` against wide tables fails. Use
-  `LIMIT`, narrow projections, or expect to add pagination yourself.
+- **1 MB result cap (auto-paginated).** The Data API returns at most 1 MB per
+  `ExecuteStatement`. When a `SELECT` overflows it, the proxy transparently
+  re-runs the query in `LIMIT/OFFSET` windows inside a single `REPEATABLE READ`
+  snapshot and stitches the pages back into one result — no client change
+  needed. The page size halves automatically if a window is still too wide; a
+  single row larger than 1 MB still fails. Non-`SELECT` statements are not
+  wrapped. Only the original query needs a stable order for `OFFSET` to be
+  meaningful; add an `ORDER BY` if row order matters to you.
 - **Type allowlist.** Aurora's Data API refuses to return rows containing
   certain Postgres types (`CHAR`/`bpchar`, `regproc`, `pg_node_tree`,
   `aclitem`, `xid`, `int2vector`, `oidvector`, `oid[]`, ...). The proxy

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-26
+
+### Added
+
+- Auto-pagination around the RDS Data API ~1 MB result cap. A `SELECT` that
+  overflows the limit is transparently re-run in `LIMIT/OFFSET` windows held in
+  a single `REPEATABLE READ` snapshot and reassembled into one result set — no
+  client change required. Page size halves automatically for very wide rows; a
+  single row over 1 MB still surfaces the error. (`rds/paginate.rs`)
+
 ## [0.1.1] - 2026-05-15
 
 ### Changed

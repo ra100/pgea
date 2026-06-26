@@ -22,8 +22,9 @@ A local proxy that speaks the PostgreSQL wire protocol on one side and the AWS R
 - `COPY`, server-side cursors, `LISTEN`/`NOTIFY`, `SAVEPOINT`, prepared-statement caching across sessions.
 - TLS between client and proxy (loopback only).
 - Multi-statement queries in a single Simple Query message.
-- Auto-pagination of large result sets (deferred).
 - A graphical configuration UI.
+
+(Auto-pagination of large result sets was originally deferred here; it is now implemented — see the 1 MB cap section below.)
 
 ## Architecture
 
@@ -252,7 +253,7 @@ All values sent in pg text format (format code 0).
 
 ## Result Set Size
 
-`ExecuteStatement` is capped at ~1 MB / 1000 rows by AWS. v1 returns the Data API error verbatim as a pg `ERROR`, prompting the user to add `LIMIT`. A future `--auto-paginate` flag may rewrite SELECTs into windowed `LIMIT/OFFSET` loops; not in v1 because rewriting risks silent wrong results on unstable orderings.
+`ExecuteStatement` is capped at ~1 MB / 1000 rows by AWS. The proxy auto-paginates: a query runs normally first (no overhead for results that fit), and only on the size-limit error (`UnsupportedResultException: The result exceeds the size limit 1 MB.`) is a row-returning `SELECT` re-run in windowed `LIMIT/OFFSET` loops and stitched back together. The "silent wrong results on unstable orderings" risk that originally deferred this is addressed by holding a single `REPEATABLE READ` snapshot across all pages (opened by the proxy when the client is not already in a transaction), so concurrent writes cannot shift rows between pages. Page size adapts (halving) when a window is itself too large; a single >1 MB row still surfaces the error. Implemented in `rds/paginate.rs`.
 
 ## Introspection Queries
 
@@ -282,7 +283,6 @@ Pg GUIs fire many catalog queries on connect (`SELECT version()`, `SHOW search_p
 
 ## Future Work
 
-- `--auto-paginate` for large SELECTs.
 - TLS between client and proxy if a non-loopback bind becomes useful.
 - Catalog-query interception cache.
 - Per-target connection pooling of SDK clients (currently per-pg-connection).

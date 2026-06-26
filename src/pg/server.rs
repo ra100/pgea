@@ -321,9 +321,7 @@ impl Connection {
             s.transaction_id().map(str::to_owned)
         };
 
-        match rds
-            .execute_statement(sql, parameters, txn_id.as_deref())
-            .await
+        match crate::rds::execute_paginated(rds.as_ref(), sql, parameters, txn_id.as_deref()).await
         {
             Ok(out) => Ok(response_from_output(sql, out)),
             Err(e) => {
@@ -513,9 +511,13 @@ impl Connection {
                 };
                 debug!(sql = %sql_for_exec, params = params.len(), "ExecuteStatement (extended)");
 
-                match rds
-                    .execute_statement(&sql_for_exec, params, txn_id.as_deref())
-                    .await
+                match crate::rds::execute_paginated(
+                    rds.as_ref(),
+                    &sql_for_exec,
+                    params,
+                    txn_id.as_deref(),
+                )
+                .await
                 {
                     Ok(out) => {
                         self.portal_cache

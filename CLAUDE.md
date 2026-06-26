@@ -52,7 +52,8 @@ Config file at `~/.config/pgea/config.toml` (override via `--config`). Targets a
 - Loopback only (`127.0.0.1`). No TLS to clients in v1.
 - Always send pg values in text format (format code 0). The static type map is the single source of truth for OIDs; unknown `typeName`s fall back to `text` (OID 25) and log at warn.
 - No SQL parsing beyond what the spec calls for: a leading-keyword regex for verb detection / intercept, and a parameter-rewriting lexer that respects strings, comments, and dollar-quoted blocks.
-- Out of scope for v1: `COPY`, server-side cursors, `LISTEN`/`NOTIFY`, `SAVEPOINT`, prepared-statement caching across sessions, multi-statement Simple Query, auto-pagination, TLS to client. Adding any of these requires updating the spec first.
+- Out of scope for v1: `COPY`, server-side cursors, `LISTEN`/`NOTIFY`, `SAVEPOINT`, prepared-statement caching across sessions, multi-statement Simple Query, TLS to client. Adding any of these requires updating the spec first.
+- Auto-pagination around the 1 MB Data API cap **is** implemented (`rds/paginate.rs`): reactive (only triggers on the size-limit error), wraps row-returning `SELECT`s in `LIMIT/OFFSET` windows under a single `REPEATABLE READ` snapshot, with adaptive page-size shrink for wide rows.
 - Logging: connection events, target resolution, profile used, and Data API call counts at `info`; SQL bodies only at `debug`.
 
 ## Coding guidelines (Karpathy)

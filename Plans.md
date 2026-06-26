@@ -62,7 +62,9 @@ Spec: `docs/superpowers/specs/2026-05-14-pg-rds-connector-design.md`
 
 ## Out of scope (v1)
 
-COPY, server-side cursors, LISTEN/NOTIFY, SAVEPOINT, prepared-statement caching, multi-statement Q, auto-pagination, TLS to client. Updating spec required before adding.
+COPY, server-side cursors, LISTEN/NOTIFY, SAVEPOINT, prepared-statement caching, multi-statement Q, TLS to client. Updating spec required before adding.
+
+(Auto-pagination around the 1 MB Data API cap is now implemented — `rds/paginate.rs`.)
 
 ## Status (2026-05-14)
 
