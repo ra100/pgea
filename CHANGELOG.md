@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/ra100/pgea/compare/v0.2.0...v0.2.1) - 2026-07-20
+
+### Other
+
+- fix stale claims about module status and release workflow
+
 ## [0.2.0] - 2026-06-26
 
 ### Added
