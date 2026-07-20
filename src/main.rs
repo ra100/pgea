@@ -6,8 +6,8 @@ use clap::{Parser, Subcommand};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-use pg_rds_connector::config::Config;
-use pg_rds_connector::pg::server;
+use pgea::config::Config;
+use pgea::pg::server;
 
 const INSTALL_URL: &str = "https://raw.githubusercontent.com/ra100/pgea/main/install.sh";
 

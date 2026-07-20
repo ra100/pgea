@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use aws_sdk_rdsdata::types::SqlParameter;
-use pg_rds_connector::config::Config;
-use pg_rds_connector::pg::server::run_with_listener;
-use pg_rds_connector::rds::{ExecuteOutput, Field, RdsClient, RdsError, ResultColumn};
+use pgea::config::Config;
+use pgea::pg::server::run_with_listener;
+use pgea::rds::{ExecuteOutput, Field, RdsClient, RdsError, ResultColumn};
 use tokio::net::TcpListener;
 
 /// Test double that records every Data API call and returns canned responses

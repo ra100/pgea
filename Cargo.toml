@@ -1,5 +1,5 @@
 [package]
-name = "pg-rds-connector"
+name = "pgea"
 version = "0.2.0"
 edition = "2021"
 description = "Local PostgreSQL wire-protocol proxy that translates queries into AWS RDS Data API calls."
