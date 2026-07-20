@@ -86,11 +86,13 @@ Rosetta 2 or build from source via `cargo install --git`.
 
 ### Releasing (maintainers)
 
-Releases are automated. Bump `version` in `Cargo.toml`, update `CHANGELOG.md`,
-and merge to `main`. The `autotag` workflow creates and pushes the matching
-`vX.Y.Z` tag, then `release` builds the binaries and publishes the GitHub
-Release (marked latest, which is what `pgea self-update` pulls). No manual
-tagging needed.
+Releases are automated end to end. `release-plz` watches conventional-commit
+PRs merged to `main` and keeps an up-to-date "Release" PR that bumps `version`
+in `Cargo.toml` and updates `CHANGELOG.md`. Merging that PR publishes the
+crate to crates.io and pushes the version bump to `main`; the `autotag`
+workflow then creates and pushes the matching `vX.Y.Z` tag, and `release`
+builds the binaries and publishes the GitHub Release (marked latest, which is
+what `pgea self-update` pulls). No manual version bumping or tagging needed.
 
 ## Configure
 
