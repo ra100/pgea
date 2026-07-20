@@ -1,6 +1,7 @@
 # pgea
 
 [![CI](https://github.com/ra100/pgea/actions/workflows/ci.yml/badge.svg)](https://github.com/ra100/pgea/actions/workflows/ci.yml)
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/D4I523F8EW)
 
 Local PostgreSQL wire-protocol proxy that translates queries into [AWS RDS
 Data API](https://docs.aws.amazon.com/rdsdataservice/latest/APIReference/Welcome.html)
