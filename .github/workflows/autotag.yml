@@ -4,16 +4,20 @@ name: autotag
 # main. Release flow becomes: bump version in Cargo.toml -> merge to main ->
 # tag + release happen automatically.
 #
+# Triggered by release-plz.yml's completion (not directly by the push) so
+# that cargo publish always runs before the tag exists: release-plz treats
+# "tag vX.Y.Z exists" as its "already published" signal, so if autotag ran
+# in parallel and won the race, release-plz would skip publishing entirely.
+#
 # A tag pushed with the default GITHUB_TOKEN does NOT trigger release.yml's
 # `on: push: tags` (GitHub blocks token-pushed events from triggering further
 # workflows). So we push the tag for history AND dispatch release.yml directly
 # via `gh workflow run`, which does run from GITHUB_TOKEN.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - Cargo.toml
+  workflow_run:
+    workflows: [release-plz]
+    types: [completed]
 
 permissions:
   contents: write
@@ -26,10 +30,12 @@ concurrency:
 jobs:
   autotag:
     runs-on: ubuntu-22.04
+    if: github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0 # need tags to check for an existing one
 
       - name: Tag and release if version changed
