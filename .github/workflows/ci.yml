@@ -42,3 +42,11 @@ jobs:
 
       - name: Test
         run: cargo test --locked --all-targets
+
+      - name: Test against real Postgres (testcontainers)
+        # ubuntu-latest runners ship Docker preinstalled, so the
+        # testcontainers-backed suite in tests/local_postgres.rs can spin up
+        # its own container here — no service: block needed.
+        run: cargo test --locked --test local_postgres
+        env:
+          PGEA_LOCAL_PG_TESTS: "1"
