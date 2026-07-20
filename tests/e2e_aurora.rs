@@ -30,8 +30,8 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
-use pg_rds_connector::config::Config;
-use pg_rds_connector::pg::server::run_with_listener;
+use pgea::config::Config;
+use pgea::pg::server::run_with_listener;
 use tokio::net::TcpListener;
 
 const ENV_GATE: &str = "PG_RDS_CONNECTOR_E2E";

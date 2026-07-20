@@ -1,4 +1,5 @@
 [workspace]
 publish = true # `cargo publish` to crates.io on release
 git_release_enable = false # autotag.yml + release.yml already tag + build binaries on merge
+git_tag_enable = false # ditto — autotag.yml owns tagging, avoid a duplicate/colliding tag
 changelog_update = true

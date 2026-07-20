@@ -161,9 +161,7 @@ impl StartupHandler for Connection {
                     return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
                         "FATAL".into(),
                         "3D000".into(),
-                        format!(
-                            "database {db_str:?} not configured as a target in pg-rds-connector"
-                        ),
+                        format!("database {db_str:?} not configured as a target in pgea"),
                     ))));
                 }
 
@@ -187,7 +185,7 @@ impl StartupHandler for Connection {
                     PgWireError::UserError(Box::new(ErrorInfo::new(
                         "FATAL".into(),
                         "3D000".into(),
-                        format!("database {db:?} not configured as a target in pg-rds-connector"),
+                        format!("database {db:?} not configured as a target in pgea"),
                     )))
                 })?;
 
@@ -807,7 +805,7 @@ fn field_to_text(f: &Field) -> String {
 #[instrument(skip(config))]
 pub async fn run(config: Arc<Config>) -> std::io::Result<()> {
     let listener = TcpListener::bind(&config.listen).await?;
-    info!(addr = %config.listen, targets = config.targets.len(), "pg-rds-connector listening");
+    info!(addr = %config.listen, targets = config.targets.len(), "pgea listening");
     accept_loop(listener, config, None).await
 }
 

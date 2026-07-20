@@ -1819,7 +1819,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
-name = "pg-rds-connector"
+name = "pg_interval"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c386dd54fce258fc04e668126ae68589a0d92e03a90ea67881d1300f70fd6170"
+dependencies = [
+ "bytes",
+ "chrono",
+ "postgres-types",
+]
+
+[[package]]
+name = "pgea"
 version = "0.2.0"
 dependencies = [
  "async-trait",
@@ -1838,17 +1849,6 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "pg_interval"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c386dd54fce258fc04e668126ae68589a0d92e03a90ea67881d1300f70fd6170"
-dependencies = [
- "bytes",
- "chrono",
- "postgres-types",
 ]
 
 [[package]]

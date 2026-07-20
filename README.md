@@ -127,7 +127,7 @@ fresh one.
 ```
 
 Logs at `info` cover connection events, target resolution, profile used, and
-Data API call counts. `RUST_LOG=pg_rds_connector=debug` adds SQL bodies.
+Data API call counts. `RUST_LOG=pgea=debug` adds SQL bodies.
 
 ## Connect
 
