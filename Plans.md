@@ -85,7 +85,7 @@ COPY, server-side cursors, LISTEN/NOTIFY, SAVEPOINT, prepared-statement caching,
 
 - M7 done — E2E env-gated suite (`tests/e2e_aurora.rs`), README DBeaver/DataGrip/TablePlus walkthrough + cargo install + prebuilt-binary docs, GH Actions release workflow (macOS arm64/x86_64, Linux x86_64 GNU)
 
-**Verified by:** `cargo build --release` succeeds; `cargo test` passes 60 unit + 4 integration + 3 env-gated E2E (skipped without gate); `cargo clippy --all-targets -- -D warnings` clean. Manually validated against a private Aurora cluster — DBeaver schema browser, table list, column list, constraints, indexes load end-to-end. Real-cluster E2E run pending; release workflow not yet exercised against a tag.
+**Verified by:** `cargo build --release` succeeds; `cargo test` passes 60 unit + 4 integration + 3 env-gated E2E (skipped without gate); `cargo clippy --all-targets -- -D warnings` clean. Manually validated against a private Aurora cluster — DBeaver schema browser, table list, column list, constraints, indexes load end-to-end. Real-cluster E2E run pending; release workflow exercised against tags v0.1.0, v0.1.1, v0.2.0.
 
 ## Archive
 
