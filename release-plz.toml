@@ -1,0 +1,4 @@
+[workspace]
+publish = true # `cargo publish` to crates.io on release
+git_release_enable = false # autotag.yml + release.yml already tag + build binaries on merge
+changelog_update = true
