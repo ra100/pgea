@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/ra100/pgea/compare/v0.3.0...v0.4.0) - 2026-07-21
+
+### Other
+
+- drop dead test-mode pool allocation, narrow RdsClientPool::new visibility
+
 ## [0.3.0](https://github.com/ra100/pgea/compare/v0.2.2...v0.3.0) - 2026-07-21
 
 ### Added
