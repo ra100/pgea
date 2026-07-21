@@ -66,6 +66,8 @@ COPY, server-side cursors, LISTEN/NOTIFY, SAVEPOINT, prepared-statement caching,
 
 (Auto-pagination around the 1 MB Data API cap is now implemented — `rds/paginate.rs`.)
 
+(Per-target SDK client pooling — spec's Future Work list — is now implemented: `rds/pool.rs` caches one `Arc<dyn RdsClient>` per resolved (target, profile) with a 15-minute TTL, wired into `Connection::build_rds_client` and shared across every connection accepted by a listener.)
+
 ## Status (2026-05-14)
 
 **Shipped (60 unit + 4 integration + 3 env-gated E2E tests pass, clippy clean):**
