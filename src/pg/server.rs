@@ -43,7 +43,7 @@ use crate::config::{Config, Target};
 use crate::intercept::{self, Action};
 use crate::rds::client::AwsRdsClient;
 use crate::rds::txn::{TxnState, TxnStatus};
-use crate::rds::{ExecuteOutput, Field, RdsClient, RdsError};
+use crate::rds::{ExecuteOutput, Field, RdsClient, RdsClientPool, RdsError};
 use crate::rewriter;
 use crate::types::{encode_bytea_hex, oid_for_type_name};
 use aws_sdk_rdsdata::types::{Field as AwsField, SqlParameter};
@@ -53,6 +53,11 @@ use aws_sdk_rdsdata::types::{Field as AwsField, SqlParameter};
 /// impls of this type.
 pub struct Connection {
     config: Arc<Config>,
+    /// Shared across every `Connection` accepted by this listener (see
+    /// `accept_loop`) so a second pg connection to the same target+profile
+    /// reuses the first one's resolved AWS credentials + SDK client instead
+    /// of re-running credential resolution from scratch.
+    pool: Arc<RdsClientPool>,
     /// Set by `StartupHandler::on_startup` once the target and profile have
     /// been resolved and the AWS SDK client built.
     rds: Mutex<Option<Arc<dyn RdsClient>>>,
@@ -69,9 +74,10 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub fn new(config: Arc<Config>) -> Self {
+    pub fn new(config: Arc<Config>, pool: Arc<RdsClientPool>) -> Self {
         Self {
             config,
+            pool,
             rds: Mutex::new(None),
             txn: Mutex::new(TxnState::default()),
             test_client: Mutex::new(None),
@@ -84,7 +90,7 @@ impl Connection {
     /// resolution and reuses the supplied client for every per-connection
     /// session.
     pub fn with_test_client(config: Arc<Config>, test_client: Arc<dyn RdsClient>) -> Self {
-        let conn = Self::new(config);
+        let conn = Self::new(config, Arc::new(RdsClientPool::default()));
         // Mutex::new was already constructed empty; we replace it below via
         // a blocking lock since this runs at construction time, before the
         // value is shared with any task. `try_lock` is enough.
@@ -94,25 +100,30 @@ impl Connection {
         conn
     }
 
-    /// Construct an [`AwsRdsClient`] for the given target and profile, or
-    /// return an injected test client when one was supplied.
+    /// Return a pooled [`AwsRdsClient`] for the given target and profile
+    /// (building + caching it on first use), or the injected test client
+    /// when one was supplied.
     async fn build_rds_client(&self, target: &Target, profile: Option<&str>) -> Arc<dyn RdsClient> {
         if let Some(c) = self.test_client.lock().await.clone() {
             return c;
         }
-        let mut loader = aws_config::defaults(BehaviorVersion::latest())
-            .region(aws_config::Region::new(target.region.clone()));
-        if let Some(p) = profile {
-            loader = loader.profile_name(p);
-        }
-        let sdk_config = loader.load().await;
-        let client = aws_sdk_rdsdata::Client::new(&sdk_config);
-        Arc::new(AwsRdsClient::new(
-            client,
-            target.cluster_arn.clone(),
-            target.secret_arn.clone(),
-            target.database.clone(),
-        ))
+        self.pool
+            .get_or_build(target, profile, || async {
+                let mut loader = aws_config::defaults(BehaviorVersion::latest())
+                    .region(aws_config::Region::new(target.region.clone()));
+                if let Some(p) = profile {
+                    loader = loader.profile_name(p);
+                }
+                let sdk_config = loader.load().await;
+                let client = aws_sdk_rdsdata::Client::new(&sdk_config);
+                Arc::new(AwsRdsClient::new(
+                    client,
+                    target.cluster_arn.clone(),
+                    target.secret_arn.clone(),
+                    target.database.clone(),
+                )) as Arc<dyn RdsClient>
+            })
+            .await
     }
 }
 
@@ -825,13 +836,18 @@ async fn accept_loop(
     config: Arc<Config>,
     test_client: Option<Arc<dyn RdsClient>>,
 ) -> std::io::Result<()> {
+    // One pool for the life of the listener, shared by every accepted
+    // connection — this is what lets a second connection to the same
+    // target+profile skip AWS credential resolution.
+    let pool = Arc::new(RdsClientPool::default());
+
     loop {
         let (socket, peer) = listener.accept().await?;
         debug!(?peer, "accepted connection");
 
         let connection = Arc::new(match test_client.clone() {
             Some(c) => Connection::with_test_client(config.clone(), c),
-            None => Connection::new(config.clone()),
+            None => Connection::new(config.clone(), pool.clone()),
         });
         let handlers = ProxyHandlers { connection };
 
@@ -912,7 +928,7 @@ region      = "eu-west-1"
     #[tokio::test]
     async fn build_rds_client_returns_test_client_when_injected() {
         let cfg = config_two_targets();
-        let conn = Connection::new(cfg.clone());
+        let conn = Connection::new(cfg.clone(), Arc::new(RdsClientPool::default()));
 
         let mock: Arc<dyn RdsClient> = Arc::new(MockRdsClient::default());
         *conn.test_client.lock().await = Some(mock.clone());

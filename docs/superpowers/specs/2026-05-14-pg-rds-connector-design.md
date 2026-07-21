@@ -285,5 +285,7 @@ Pg GUIs fire many catalog queries on connect (`SELECT version()`, `SHOW search_p
 
 - TLS between client and proxy if a non-loopback bind becomes useful.
 - Catalog-query interception cache.
-- Per-target connection pooling of SDK clients (currently per-pg-connection).
 - Optional `psql`-style introspection shortcuts (`\d`).
+
+(Per-target SDK client pooling, keyed by resolved target + profile with
+TTL-based eviction, is now implemented — see `rds/pool.rs`.)
