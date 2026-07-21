@@ -55,7 +55,7 @@ impl Default for RdsClientPool {
 }
 
 impl RdsClientPool {
-    pub fn new(ttl: Duration) -> Self {
+    pub(crate) fn new(ttl: Duration) -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
             ttl,
