@@ -271,6 +271,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_racers_on_a_cold_key_both_succeed() {
+        // Exercises the race the module doc comment describes in prose:
+        // two callers racing past a missing entry for the same key both
+        // run build() and both get back a valid, usable client -- neither
+        // deadlocks or blocks on the other, and the loser's Arc is still
+        // fully functional even though its insert gets overwritten.
+        let pool = Arc::new(RdsClientPool::default());
+        let t = target("c");
+        let build_calls = Arc::new(AtomicU32::new(0));
+
+        let racer = |pool: Arc<RdsClientPool>, t: Target, build_calls: Arc<AtomicU32>| async move {
+            pool.get_or_build(&t, Some("dev"), || async {
+                // Widen the race window so both racers are past the
+                // cache-hit check before either finishes building.
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                build_calls.fetch_add(1, Ordering::SeqCst);
+                Arc::new(StubClient) as Arc<dyn RdsClient>
+            })
+            .await
+        };
+
+        let (first, second) = tokio::join!(
+            racer(pool.clone(), t.clone(), build_calls.clone()),
+            racer(pool.clone(), t.clone(), build_calls.clone())
+        );
+
+        assert_eq!(
+            build_calls.load(Ordering::SeqCst),
+            2,
+            "both racers must run build() independently, neither waits on the other"
+        );
+        // Both racers get back a valid client regardless of which insert
+        // "won" the map slot -- neither Arc is invalidated by the other.
+        first
+            .begin_transaction()
+            .await
+            .expect("first racer's client still usable");
+        second
+            .begin_transaction()
+            .await
+            .expect("second racer's client still usable");
+
+        // A subsequent lookup returns whichever insert landed last --
+        // matching the doc comment's "second insert simply wins".
+        let subsequent = pool
+            .get_or_build(&t, Some("dev"), || async {
+                panic!("must be a cache hit, build should not run again")
+            })
+            .await;
+        assert!(
+            Arc::ptr_eq(&subsequent, &first) || Arc::ptr_eq(&subsequent, &second),
+            "cache must hold whichever racer's client was inserted last"
+        );
+    }
+
+    #[tokio::test]
     async fn mock_rds_client_can_be_pooled() {
         // Sanity check against the project's own existing test double, not
         // just the local StubClient above.
