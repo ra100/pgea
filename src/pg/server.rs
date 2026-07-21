@@ -56,8 +56,10 @@ pub struct Connection {
     /// Shared across every `Connection` accepted by this listener (see
     /// `accept_loop`) so a second pg connection to the same target+profile
     /// reuses the first one's resolved AWS credentials + SDK client instead
-    /// of re-running credential resolution from scratch.
-    pool: Arc<RdsClientPool>,
+    /// of re-running credential resolution from scratch. `None` when
+    /// `test_client` is set, since that short-circuits `build_rds_client`
+    /// before the pool is ever touched.
+    pool: Option<Arc<RdsClientPool>>,
     /// Set by `StartupHandler::on_startup` once the target and profile have
     /// been resolved and the AWS SDK client built.
     rds: Mutex<Option<Arc<dyn RdsClient>>>,
@@ -77,7 +79,7 @@ impl Connection {
     pub fn new(config: Arc<Config>, pool: Arc<RdsClientPool>) -> Self {
         Self {
             config,
-            pool,
+            pool: Some(pool),
             rds: Mutex::new(None),
             txn: Mutex::new(TxnState::default()),
             test_client: Mutex::new(None),
@@ -88,16 +90,17 @@ impl Connection {
     /// Construct a [`Connection`] with a pre-installed RDS client. Used by
     /// integration tests so the StartupHandler skips real AWS credential
     /// resolution and reuses the supplied client for every per-connection
-    /// session.
+    /// session. No pool is allocated: `build_rds_client` returns
+    /// `test_client` before it would ever consult `pool`.
     pub fn with_test_client(config: Arc<Config>, test_client: Arc<dyn RdsClient>) -> Self {
-        let conn = Self::new(config, Arc::new(RdsClientPool::default()));
-        // Mutex::new was already constructed empty; we replace it below via
-        // a blocking lock since this runs at construction time, before the
-        // value is shared with any task. `try_lock` is enough.
-        if let Ok(mut guard) = conn.test_client.try_lock() {
-            *guard = Some(test_client);
+        Self {
+            config,
+            pool: None,
+            rds: Mutex::new(None),
+            txn: Mutex::new(TxnState::default()),
+            test_client: Mutex::new(Some(test_client)),
+            portal_cache: Mutex::new(HashMap::new()),
         }
-        conn
     }
 
     /// Return a pooled [`AwsRdsClient`] for the given target and profile
@@ -108,6 +111,8 @@ impl Connection {
             return c;
         }
         self.pool
+            .as_ref()
+            .expect("pool is always set when test_client is unset")
             .get_or_build(target, profile, || async {
                 let mut loader = aws_config::defaults(BehaviorVersion::latest())
                     .region(aws_config::Region::new(target.region.clone()));
@@ -938,5 +943,26 @@ region      = "eu-west-1"
 
         // The same Arc instance should be handed back unchanged.
         assert!(Arc::ptr_eq(&returned, &mock));
+    }
+
+    #[tokio::test]
+    async fn build_rds_client_reuses_pool_when_no_test_client_is_set() {
+        let cfg = config_two_targets();
+        let pool = Arc::new(RdsClientPool::default());
+        let conn = Connection::new(cfg.clone(), pool);
+
+        let target = cfg.target("dev").unwrap().clone();
+        let first = conn.build_rds_client(&target, Some("dev-profile")).await;
+        let second = conn.build_rds_client(&target, Some("dev-profile")).await;
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "same target+profile must reuse the pooled client"
+        );
+
+        let third = conn.build_rds_client(&target, Some("other-profile")).await;
+        assert!(
+            !Arc::ptr_eq(&first, &third),
+            "distinct profile must build a distinct client"
+        );
     }
 }
