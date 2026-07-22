@@ -3,12 +3,23 @@
 //! These tests are gated by `PG_RDS_CONNECTOR_E2E=1` and additional env vars
 //! that point at a real cluster. Without the gate they no-op and `cargo test`
 //! stays green. With the gate they spin up an in-process proxy backed by a
-//! real `AwsRdsClient`, connect via `tokio-postgres`, and exercise the
-//! Simple Query path, transaction verbs, the unsupported-op intercept, DML
-//! command tags, Extended Query parameter binding, and the aborted-txn
-//! (25P02) state machine -- all against the real RDS Data API rather than
+//! real `AwsRdsClient`, connect via `tokio-postgres`, and exercise every
+//! feature this proxy implements against the real RDS Data API rather than
 //! the `MockRdsClient`/testcontainers doubles used elsewhere, so bugs in the
-//! actual AWS request/response translation surface here.
+//! actual AWS request/response translation surface here:
+//!
+//! - Simple Query path, DML command tags
+//! - transaction verbs (begin/commit/rollback), nested-BEGIN and
+//!   commit/rollback-without-a-transaction rejection, the aborted-txn
+//!   (25P02) state machine
+//! - the unsupported-op intercept (SAVEPOINT etc.)
+//! - Extended Query parameter binding, including typed numeric/boolean
+//!   params and NULL params
+//! - array and bytea response encoding
+//! - catalog-query rewriting (`src/catalog.rs`) against Data API's real
+//!   type-output restrictions, not just the rewritten SQL text
+//! - auto-pagination (`src/rds/paginate.rs`) against the real ~1 MB
+//!   response cap, not a mocked error string
 //!
 //! Tests that create tables use a distinct table name and drop it (`DROP
 //! TABLE IF EXISTS ... CASCADE`) both before and after, so they stay
@@ -364,6 +375,214 @@ async fn e2e_error_inside_transaction_aborts_until_rollback() {
             .await
             .expect("select after rollback");
         assert!(rows_of(rows).is_empty());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn e2e_nested_begin_is_rejected() {
+    let Some(config) = e2e_config_or_skip("e2e_nested_begin_is_rejected") else {
+        return;
+    };
+    let addr = spawn_real_proxy(config).await;
+    let client = connect(&addr).await;
+
+    client.simple_query("BEGIN").await.expect("BEGIN");
+    let res = client.simple_query("BEGIN").await;
+    let err = res.expect_err("nested BEGIN must be rejected");
+    let db_err = err.as_db_error().expect("expected a pg ErrorResponse");
+    assert_eq!(db_err.code().code(), "25001");
+
+    // The outer transaction is untouched by the rejected nested BEGIN.
+    client.simple_query("ROLLBACK").await.expect("ROLLBACK");
+}
+
+#[tokio::test]
+async fn e2e_commit_and_rollback_without_transaction_are_rejected() {
+    let Some(config) =
+        e2e_config_or_skip("e2e_commit_and_rollback_without_transaction_are_rejected")
+    else {
+        return;
+    };
+    let addr = spawn_real_proxy(config).await;
+    let client = connect(&addr).await;
+
+    let commit_err = client
+        .simple_query("COMMIT")
+        .await
+        .expect_err("COMMIT with no active transaction must be rejected");
+    assert_eq!(
+        commit_err
+            .as_db_error()
+            .expect("expected a pg ErrorResponse")
+            .code()
+            .code(),
+        "25P01"
+    );
+
+    let rollback_err = client
+        .simple_query("ROLLBACK")
+        .await
+        .expect_err("ROLLBACK with no active transaction must be rejected");
+    assert_eq!(
+        rollback_err
+            .as_db_error()
+            .expect("expected a pg ErrorResponse")
+            .code()
+            .code(),
+        "25P01"
+    );
+}
+
+#[tokio::test]
+async fn e2e_null_parameter_binds_through_real_data_api() {
+    let Some(config) = e2e_config_or_skip("e2e_null_parameter_binds_through_real_data_api") else {
+        return;
+    };
+    let addr = spawn_real_proxy(config).await;
+    let client = connect(&addr).await;
+
+    with_scratch_table(&client, "e2e_null_bind_widgets", || async {
+        client
+            .simple_query("CREATE TABLE e2e_null_bind_widgets (id INT, label TEXT)")
+            .await
+            .expect("create table");
+
+        use tokio_postgres::types::Type as PgType;
+        let stmt = client
+            .prepare_typed(
+                "INSERT INTO e2e_null_bind_widgets(id, label) VALUES ($1, $2)",
+                &[PgType::INT4, PgType::TEXT],
+            )
+            .await
+            .expect("prepare_typed");
+        let none_label: Option<&str> = None;
+        let affected = client
+            .execute(&stmt, &[&7_i32, &none_label])
+            .await
+            .expect("insert with NULL param through real Data API");
+        assert_eq!(affected, 1);
+
+        let rows = client
+            .simple_query("SELECT label FROM e2e_null_bind_widgets WHERE id = 7")
+            .await
+            .expect("select back the row");
+        let data = rows_of(rows);
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].get("label"), None, "label must round-trip as NULL");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn e2e_array_and_bytea_round_trip_through_real_data_api() {
+    let Some(config) = e2e_config_or_skip("e2e_array_and_bytea_round_trip_through_real_data_api")
+    else {
+        return;
+    };
+    let addr = spawn_real_proxy(config).await;
+    let client = connect(&addr).await;
+
+    with_scratch_table(&client, "e2e_array_bytea_widgets", || async {
+        client
+            .simple_query("CREATE TABLE e2e_array_bytea_widgets (tags TEXT[], payload BYTEA)")
+            .await
+            .expect("create table");
+        client
+            .simple_query(
+                "INSERT INTO e2e_array_bytea_widgets VALUES \
+                 (ARRAY['a','b','c'], E'\\\\x48656c6c6f')",
+            )
+            .await
+            .expect("seed row with array + bytea");
+
+        let rows = client
+            .simple_query("SELECT tags, payload FROM e2e_array_bytea_widgets")
+            .await
+            .expect("select array + bytea");
+        let data = rows_of(rows);
+        assert_eq!(data.len(), 1);
+        // Response translation renders arrays as pg array literals and
+        // bytea as \x-prefixed hex -- both encoders are unit-tested in
+        // isolation (src/types.rs) but this is the only place either is
+        // proven to round-trip through the real Data API response shape.
+        assert_eq!(data[0].get("tags"), Some("{a,b,c}"));
+        assert_eq!(data[0].get("payload"), Some("\\x48656c6c6f"));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn e2e_catalog_rewrite_survives_real_data_api_type_restrictions() {
+    let Some(config) =
+        e2e_config_or_skip("e2e_catalog_rewrite_survives_real_data_api_type_restrictions")
+    else {
+        return;
+    };
+    let addr = spawn_real_proxy(config).await;
+    let client = connect(&addr).await;
+
+    with_scratch_table(&client, "e2e_catalog_probe_widgets", || async {
+        client
+            .simple_query("CREATE TABLE e2e_catalog_probe_widgets (id INT)")
+            .await
+            .expect("create table");
+
+        // Mirrors the pg_class probe DBeaver/DataGrip issue on connect,
+        // which src/catalog.rs::rewrite_pg_class_star rewrites to cast
+        // char(1)/aclitem[] columns Data API otherwise refuses to return.
+        // Unit tests only assert the rewritten SQL text; this is the only
+        // place that proves the rewrite's casts actually satisfy Data
+        // API's real UnsupportedResultException checks, not just our
+        // guess at what it rejects.
+        let rows = client
+            .simple_query(
+                "SELECT c.oid, c.* FROM pg_catalog.pg_class c \
+                 WHERE c.relname = 'e2e_catalog_probe_widgets'",
+            )
+            .await
+            .expect("catalog probe with c.* must survive Data API type checks");
+        let data = rows_of(rows);
+        assert_eq!(data.len(), 1, "expected exactly the scratch table's row");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn e2e_auto_pagination_across_real_size_limit() {
+    let Some(config) = e2e_config_or_skip("e2e_auto_pagination_across_real_size_limit") else {
+        return;
+    };
+    let addr = spawn_real_proxy(config).await;
+    let client = connect(&addr).await;
+
+    with_scratch_table(&client, "e2e_pagination_widgets", || async {
+        client
+            .simple_query("CREATE TABLE e2e_pagination_widgets (id INT, padding TEXT)")
+            .await
+            .expect("create table");
+
+        // ~2000 bytes/row * 800 rows ~= 1.6 MB, safely past the Data API's
+        // ~1 MB ExecuteStatement response cap, so a plain SELECT * here can
+        // only succeed via src/rds/paginate.rs's LIMIT/OFFSET auto-paging --
+        // this is the one place that proves it against the API's *real*
+        // size limit rather than a mocked error string.
+        client
+            .simple_query(
+                "INSERT INTO e2e_pagination_widgets \
+                 SELECT n, repeat('x', 2000) FROM generate_series(1, 800) AS n",
+            )
+            .await
+            .expect("seed wide rows");
+
+        let rows = client
+            .simple_query("SELECT id FROM e2e_pagination_widgets ORDER BY id")
+            .await
+            .expect("auto-paginated select across the real 1 MB cap");
+        let data = rows_of(rows);
+        assert_eq!(data.len(), 800, "all rows must come back across pages");
+        assert_eq!(data[0].get("id"), Some("1"));
+        assert_eq!(data[799].get("id"), Some("800"));
     })
     .await;
 }

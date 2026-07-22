@@ -35,6 +35,7 @@ use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::startup::Authentication;
 use pgwire::messages::{PgWireBackendMessage, PgWireFrontendMessage};
 use pgwire::tokio::process_socket;
+use pgwire::types::format::FormatOptions;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{debug, info, instrument, warn};
@@ -835,7 +836,20 @@ fn response_from_output(sql: &str, out: ExecuteOutput) -> Response {
                 Field::Null => None,
                 _ => Some(field_to_text(&f)),
             };
-            enc.encode_field(&v)?;
+            // Every value is a fully pre-formatted pg text literal (array
+            // literals included -- see field_to_text), so it must be
+            // encoded as plain TEXT regardless of the column's declared
+            // OID. `encode_field` would use the schema's real OID
+            // instead, and pgwire's array-aware `ToSqlText` assumes it's
+            // being handed one unquoted *element*, not a finished `{...}`
+            // literal -- it would wrap our already-built literal in an
+            // extra layer of quotes because it contains `{`/`}`.
+            enc.encode_field_with_type_and_format(
+                &v,
+                &Type::TEXT,
+                FieldFormat::Text,
+                &FormatOptions::default(),
+            )?;
         }
         Ok(enc.take_row())
     });
