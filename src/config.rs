@@ -82,7 +82,10 @@ static CLUSTER_ARN_RE: Lazy<Regex> = Lazy::new(|| {
 
 static SECRET_ARN_RE: Lazy<Regex> = Lazy::new(|| {
     // arn:aws:secretsmanager:<region>:<account>:secret:<name>
-    Regex::new(r"^arn:aws:secretsmanager:[a-z0-9-]+:\d+:secret:[A-Za-z0-9_.\-/]+$").unwrap()
+    // Secrets Manager allows letters, digits, and /_+=.@!- in a secret name
+    // (AWS's own cluster-managed secrets use the `!` form, e.g.
+    // `rds!cluster-<uuid>-<suffix>`).
+    Regex::new(r"^arn:aws:secretsmanager:[a-z0-9-]+:\d+:secret:[A-Za-z0-9_.\-/+=@!]+$").unwrap()
 });
 
 impl Config {
@@ -258,6 +261,21 @@ region      = "us-east-1"
             ConfigError::InvalidArn { field, .. } => assert_eq!(field, "cluster_arn"),
             other => panic!("expected InvalidArn, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn accepts_aws_managed_secret_arn_with_bang() {
+        let cfg = Config::parse(
+            r#"
+[targets.dev]
+cluster_arn = "arn:aws:rds:us-east-1:123456789012:cluster:foo"
+secret_arn  = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rds!cluster-8faa94cd-70eb-464e-ba98-3e70e07e15a0-sk0gOX"
+database    = "x"
+region      = "us-east-1"
+"#,
+        )
+        .expect("AWS-managed secret ARNs use `rds!cluster-<uuid>-<suffix>` names");
+        assert!(cfg.targets["dev"].secret_arn.contains('!'));
     }
 
     #[test]
