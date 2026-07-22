@@ -56,7 +56,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          # On workflow_dispatch (used by autotag.yml), GITHUB_REF_NAME is
+          # always set to the branch that was dispatched from (e.g. "main"),
+          # not the target tag -- inputs.tag must take priority, matching the
+          # `release:` job's `tag_name: ${{ inputs.tag || github.ref_name }}`.
+          tag="${{ inputs.tag }}"
+          tag="${tag:-$GITHUB_REF_NAME}"
           name="pgea-${tag}-${{ matrix.target }}"
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/pgea" "dist/pgea"
