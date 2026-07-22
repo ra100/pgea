@@ -200,6 +200,49 @@ async fn simple_select_returns_rows() {
 }
 
 #[tokio::test]
+async fn array_column_round_trips_without_double_quoting() {
+    // Regression test: response_from_output declares array columns with
+    // their real array OID (e.g. _text/text[]) in the RowDescription, but
+    // the value is already a fully pre-built pg array literal string
+    // (Field::ArrayLiteral, produced by src/rds/client.rs::format_array_value).
+    // pgwire's ToSqlText for an array-typed column assumes it's being
+    // handed one unquoted *element*, not a finished `{...}` literal, and
+    // wraps the whole thing in an extra pair of quotes because it contains
+    // `{`/`}` -- caught only by running an actual pg wire round-trip via
+    // tokio-postgres, not by testing the literal-builder in isolation.
+    let output = ExecuteOutput {
+        columns: vec![ResultColumn {
+            name: "tags".into(),
+            type_name: "_text".into(),
+            nullable: true,
+        }],
+        rows: vec![vec![Field::ArrayLiteral("{a,b,c}".into())]],
+        rows_affected: 0,
+    };
+    let mock = Arc::new(RecordingMock::new("tx-array").with_response("FROM widgets", output));
+    let addr = spawn_proxy("dev", mock.clone()).await;
+    let client = connect(&addr, "dev").await;
+
+    let rows = client
+        .simple_query("SELECT tags FROM widgets")
+        .await
+        .expect("simple_query");
+    let data_rows: Vec<_> = rows
+        .into_iter()
+        .filter_map(|r| match r {
+            tokio_postgres::SimpleQueryMessage::Row(row) => Some(row),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(data_rows.len(), 1);
+    assert_eq!(
+        data_rows[0].get("tags"),
+        Some("{a,b,c}"),
+        "array literal must reach the client unquoted, not wrapped as \"{{a,b,c}}\""
+    );
+}
+
+#[tokio::test]
 async fn extended_query_rewrites_params() {
     // Use INSERT (no result columns) so we can exercise the Extended Query
     // path without needing the proxy to emit a result-row schema at Describe
