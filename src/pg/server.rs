@@ -361,45 +361,85 @@ fn is_unsupported_type_error(msg: &str) -> bool {
     msg.contains("UnsupportedResultException")
 }
 
-/// Decode pg binary-format bind parameter for a curated set of scalar types
-/// to its canonical text representation. Returns `None` if we don't know how
-/// to decode the type (caller falls back).
-fn decode_binary_scalar(ty: &Type, bytes: &[u8]) -> Option<String> {
+/// Decode a pg binary-format bind parameter for a curated set of scalar
+/// types to the Data API `Field` variant matching its actual pg type.
+/// Returns `None` if we don't know how to decode the type (caller falls
+/// back).
+///
+/// Data API validates parameter types strictly server-side: sending an
+/// `INT4` column's value as `Field::StringValue("42")` fails with
+/// `column "id" is of type integer but expression is of type text`, it does
+/// *not* implicitly cast the way a raw SQL text literal would. So numeric
+/// and boolean types must use their native `Field` variant
+/// (`LongValue`/`DoubleValue`/`BooleanValue`), not a stringified fallback.
+fn decode_binary_scalar(ty: &Type, bytes: &[u8]) -> Option<AwsField> {
     match *ty {
-        Type::BOOL if bytes.len() == 1 => Some(if bytes[0] == 0 {
-            "f".into()
-        } else {
-            "t".into()
-        }),
+        Type::BOOL if bytes.len() == 1 => Some(AwsField::BooleanValue(bytes[0] != 0)),
         Type::INT2 if bytes.len() == 2 => {
-            Some(i16::from_be_bytes([bytes[0], bytes[1]]).to_string())
+            Some(AwsField::LongValue(
+                i16::from_be_bytes([bytes[0], bytes[1]]) as i64,
+            ))
         }
-        Type::INT4 | Type::OID if bytes.len() == 4 => {
-            let v = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-            Some(if matches!(*ty, Type::OID) {
-                v.to_string()
-            } else {
-                (v as i32).to_string()
-            })
+        Type::INT4 if bytes.len() == 4 => {
+            let arr: [u8; 4] = bytes.try_into().ok()?;
+            Some(AwsField::LongValue(i32::from_be_bytes(arr) as i64))
+        }
+        Type::OID if bytes.len() == 4 => {
+            let arr: [u8; 4] = bytes.try_into().ok()?;
+            // OID has no dedicated Field variant; Data API accepts an OID
+            // column's value as a stringified integer (unlike INT4/INT8,
+            // which reject StringValue -- OID's implicit text->oid cast is
+            // permitted server-side).
+            Some(AwsField::StringValue(u32::from_be_bytes(arr).to_string()))
         }
         Type::INT8 if bytes.len() == 8 => {
             let arr: [u8; 8] = bytes.try_into().ok()?;
-            Some(i64::from_be_bytes(arr).to_string())
+            Some(AwsField::LongValue(i64::from_be_bytes(arr)))
         }
         Type::FLOAT4 if bytes.len() == 4 => {
             let arr: [u8; 4] = bytes.try_into().ok()?;
-            Some(f32::from_be_bytes(arr).to_string())
+            Some(AwsField::DoubleValue(f32::from_be_bytes(arr) as f64))
         }
         Type::FLOAT8 if bytes.len() == 8 => {
             let arr: [u8; 8] = bytes.try_into().ok()?;
-            Some(f64::from_be_bytes(arr).to_string())
+            Some(AwsField::DoubleValue(f64::from_be_bytes(arr)))
         }
-        Type::BYTEA => Some(format!("\\x{}", encode_bytea_hex(bytes))),
+        Type::BYTEA => Some(AwsField::BlobValue(aws_sdk_rdsdata::primitives::Blob::new(
+            bytes.to_vec(),
+        ))),
         // Text-like types: pg binary format is identical to text bytes.
         Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::UNKNOWN => {
-            std::str::from_utf8(bytes).ok().map(str::to_owned)
+            std::str::from_utf8(bytes)
+                .ok()
+                .map(|s| AwsField::StringValue(s.to_owned()))
         }
         _ => None,
+    }
+}
+
+/// Map a text-format bind parameter to a Data API `Field`, using the
+/// declared pg type the same way `decode_binary_scalar` does for binary
+/// format -- Data API rejects `StringValue` for numeric/boolean columns
+/// regardless of which wire format the client used to send the value.
+/// Falls back to `StringValue` when the type is unknown or the text fails
+/// to parse as its declared type (lets the Data API surface its own error
+/// rather than us guessing).
+fn field_for_text_scalar(ty: Option<&Type>, text: &str) -> AwsField {
+    match ty {
+        Some(&Type::BOOL) => match text {
+            "t" | "true" | "TRUE" | "1" => AwsField::BooleanValue(true),
+            "f" | "false" | "FALSE" | "0" => AwsField::BooleanValue(false),
+            _ => AwsField::StringValue(text.to_owned()),
+        },
+        Some(&Type::INT2) | Some(&Type::INT4) | Some(&Type::INT8) => text
+            .parse::<i64>()
+            .map(AwsField::LongValue)
+            .unwrap_or_else(|_| AwsField::StringValue(text.to_owned())),
+        Some(&Type::FLOAT4) | Some(&Type::FLOAT8) => text
+            .parse::<f64>()
+            .map(AwsField::DoubleValue)
+            .unwrap_or_else(|_| AwsField::StringValue(text.to_owned())),
+        _ => AwsField::StringValue(text.to_owned()),
     }
 }
 
@@ -444,26 +484,29 @@ impl Connection {
     }
 
     /// Decode a single bind parameter to a Data API `Field`. Honors the
-    /// per-parameter format code (text vs binary). For binary, decodes a
-    /// curated set of scalar pg types to their canonical text form.
+    /// per-parameter format code (text vs binary). Both paths need the
+    /// declared pg type to pick a `Field` variant Data API's strict
+    /// server-side type checking will accept for that column (see
+    /// `decode_binary_scalar` and `field_for_text_scalar`).
     fn decode_bind_param(idx: usize, bytes: &[u8], portal: &Portal<String>) -> AwsField {
+        let pg_type = portal
+            .statement
+            .parameter_types
+            .get(idx)
+            .and_then(|t| t.as_ref());
         let is_binary = portal.parameter_format.is_binary(idx);
+
         if !is_binary {
             return match std::str::from_utf8(bytes) {
-                Ok(s) => AwsField::StringValue(s.to_owned()),
+                Ok(s) => field_for_text_scalar(pg_type, s),
                 Err(_) => {
                     AwsField::BlobValue(aws_sdk_rdsdata::primitives::Blob::new(bytes.to_vec()))
                 }
             };
         }
 
-        let pg_type = portal
-            .statement
-            .parameter_types
-            .get(idx)
-            .and_then(|t| t.as_ref());
         if let Some(decoded) = pg_type.and_then(|t| decode_binary_scalar(t, bytes)) {
-            return AwsField::StringValue(decoded);
+            return decoded;
         }
 
         // Unknown/unsupported binary type. Fall back: try UTF-8, else blob.
@@ -963,6 +1006,81 @@ region      = "eu-west-1"
         assert!(
             !Arc::ptr_eq(&first, &third),
             "distinct profile must build a distinct client"
+        );
+    }
+
+    // Regression coverage for a bug only a real Data API run surfaced: numeric
+    // and boolean bind params were always wrapped in `Field::StringValue`,
+    // which Data API's strict server-side type checking rejects for columns
+    // whose pg type isn't itself text-like (e.g. "column is of type integer
+    // but expression is of type text"). Both the binary-format decode path
+    // (`decode_binary_scalar`) and the text-format path
+    // (`field_for_text_scalar`) must produce the native `Field` variant.
+
+    #[test]
+    fn decode_binary_scalar_uses_native_field_variants() {
+        assert_eq!(
+            decode_binary_scalar(&Type::INT4, &42_i32.to_be_bytes()),
+            Some(AwsField::LongValue(42))
+        );
+        assert_eq!(
+            decode_binary_scalar(&Type::INT8, &42_i64.to_be_bytes()),
+            Some(AwsField::LongValue(42))
+        );
+        assert_eq!(
+            decode_binary_scalar(&Type::INT2, &42_i16.to_be_bytes()),
+            Some(AwsField::LongValue(42))
+        );
+        assert_eq!(
+            decode_binary_scalar(&Type::BOOL, &[1]),
+            Some(AwsField::BooleanValue(true))
+        );
+        assert_eq!(
+            decode_binary_scalar(&Type::FLOAT8, &1.5_f64.to_be_bytes()),
+            Some(AwsField::DoubleValue(1.5))
+        );
+        assert_eq!(
+            decode_binary_scalar(&Type::TEXT, b"hello"),
+            Some(AwsField::StringValue("hello".to_owned()))
+        );
+        // OID keeps the stringified form -- Data API permits OID's
+        // text->oid implicit cast even though it rejects it for INT4/INT8.
+        assert_eq!(
+            decode_binary_scalar(&Type::OID, &42_u32.to_be_bytes()),
+            Some(AwsField::StringValue("42".to_owned()))
+        );
+    }
+
+    #[test]
+    fn field_for_text_scalar_uses_native_field_variants() {
+        assert_eq!(
+            field_for_text_scalar(Some(&Type::INT4), "42"),
+            AwsField::LongValue(42)
+        );
+        assert_eq!(
+            field_for_text_scalar(Some(&Type::FLOAT8), "1.5"),
+            AwsField::DoubleValue(1.5)
+        );
+        assert_eq!(
+            field_for_text_scalar(Some(&Type::BOOL), "t"),
+            AwsField::BooleanValue(true)
+        );
+        assert_eq!(
+            field_for_text_scalar(Some(&Type::TEXT), "hello"),
+            AwsField::StringValue("hello".to_owned())
+        );
+        // Unparseable text for a declared numeric type falls back to
+        // StringValue rather than panicking -- Data API will report its own
+        // clear error instead of us guessing.
+        assert_eq!(
+            field_for_text_scalar(Some(&Type::INT4), "not-a-number"),
+            AwsField::StringValue("not-a-number".to_owned())
+        );
+        // Unknown/no declared type: text stays a StringValue, unchanged
+        // behavior from before this fix.
+        assert_eq!(
+            field_for_text_scalar(None, "42"),
+            AwsField::StringValue("42".to_owned())
         );
     }
 }
