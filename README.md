@@ -108,10 +108,33 @@ region      = "us-east-1"
 cluster_arn = "arn:aws:rds:us-east-1:123456789012:cluster:my-cluster"
 secret_arn  = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-cluster-credentials-XXXXXX"
 database    = "appdb"
+
+[targets.playground_uat_ro]
+profile     = "uat"
+region      = "us-east-1"
+cluster_arn = "arn:aws:rds:us-east-1:123456789012:cluster:my-cluster"
+secret_arn  = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-cluster-credentials-XXXXXX"
+database    = "appdb"
+read_only   = true
 ```
 
 Targets are a map keyed by name; the section header (`[targets.<name>]`)
 sets the name. The pg `dbname` field selects the target.
+
+Set `read_only = true` on a target to make it a hard read-only boundary.
+Every statement then runs inside an engine-enforced `SET TRANSACTION READ
+ONLY` transaction, so PostgreSQL itself rejects any write — including ones a
+leading-keyword check cannot see: writable CTEs (`WITH ... AS (INSERT ...)`),
+`SELECT`s that call volatile writing functions, and `EXPLAIN ANALYZE` of a
+write. A fast-reject layer additionally turns the obvious write shapes (DML,
+DDL, GRANT/REVOKE, VACUUM/…, CALL, `EXPLAIN ANALYZE`, writable CTEs) into a
+clean pg error with no Data API round-trip. Reads, transaction verbs, and
+harmless session verbs (`SET`/`SHOW`/`RESET`) still work, so GUI clients
+connect normally. Defaults to `false`.
+
+Cost: each statement on a read-only target is three Data API calls
+(begin/set-read-only/commit) instead of one, so reads are slower and cost
+more. That is the price of an engine-enforced guarantee.
 
 Validation at startup is structural only (TOML, ARN regex, duplicate names,
 listen parses). Credentials are resolved lazily on first connection so a

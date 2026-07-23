@@ -64,6 +64,9 @@ pub struct Connection {
     /// Set by `StartupHandler::on_startup` once the target and profile have
     /// been resolved and the AWS SDK client built.
     rds: Mutex<Option<Arc<dyn RdsClient>>>,
+    /// Copied from the resolved `Target` at startup. When true, write
+    /// statements are rejected before reaching the Data API.
+    read_only: Mutex<bool>,
     txn: Mutex<TxnState>,
     /// Test seam: when set, `build_rds_client` returns this client instead of
     /// constructing an `AwsRdsClient`. Lets us drive the StartupHandler in
@@ -82,6 +85,7 @@ impl Connection {
             config,
             pool: Some(pool),
             rds: Mutex::new(None),
+            read_only: Mutex::new(false),
             txn: Mutex::new(TxnState::default()),
             test_client: Mutex::new(None),
             portal_cache: Mutex::new(HashMap::new()),
@@ -98,6 +102,7 @@ impl Connection {
             config,
             pool: None,
             rds: Mutex::new(None),
+            read_only: Mutex::new(false),
             txn: Mutex::new(TxnState::default()),
             test_client: Mutex::new(Some(test_client)),
             portal_cache: Mutex::new(HashMap::new()),
@@ -225,6 +230,7 @@ impl StartupHandler for Connection {
                     .build_rds_client(&target, resolved_profile.as_deref())
                     .await;
                 *self.rds.lock().await = Some(rds);
+                *self.read_only.lock().await = target.read_only;
 
                 let provider = DefaultServerParameterProvider::default();
                 auth::finish_authentication(client, &provider).await?;
@@ -261,14 +267,19 @@ impl SimpleQueryHandler for Connection {
             }
         };
 
-        match intercept::classify(trimmed) {
+        let action = if *self.read_only.lock().await {
+            intercept::classify_read_only(trimmed)
+        } else {
+            intercept::classify(trimmed)
+        };
+        match action {
             Action::Reject(op) => Ok(vec![error_response(
                 "ERROR",
                 "0A000",
                 format!("{op} not supported by RDS Data API proxy"),
             )]),
 
-            Action::Begin => match self.txn.lock().await.begin(&rds).await {
+            Action::Begin => match self.begin_txn(&rds).await {
                 Ok(_) => Ok(vec![Response::TransactionStart(Tag::new("BEGIN"))]),
                 Err(e) => Ok(vec![error_response("ERROR", "25001", e.to_string())]),
             },
@@ -324,7 +335,7 @@ impl Connection {
             None => sql,
         };
         tracing::debug!(sql, params = parameters.len(), "ExecuteStatement");
-        let txn_id = {
+        let (txn_id, read_only) = {
             let s = self.txn.lock().await;
             if s.status() == TxnStatus::Failed {
                 return Err(error_response(
@@ -333,11 +344,58 @@ impl Connection {
                     "current transaction is aborted, commands ignored until end of transaction block".to_string(),
                 ));
             }
-            s.transaction_id().map(str::to_owned)
+            (
+                s.transaction_id().map(str::to_owned),
+                *self.read_only.lock().await,
+            )
         };
 
-        match crate::rds::execute_paginated(rds.as_ref(), sql, parameters, txn_id.as_deref()).await
-        {
+        // Hard read-only boundary: when the target is read_only and the client
+        // is NOT already inside its own transaction, run this statement inside
+        // an implicit `SET TRANSACTION READ ONLY` transaction so PostgreSQL
+        // rejects any write the intercept regex could not see (writable CTEs,
+        // volatile writing functions, EXPLAIN ANALYZE of a write). When the
+        // client IS in a transaction, `begin_txn` already marked it read-only,
+        // so we just run inside it.
+        if read_only && txn_id.is_none() {
+            let mut state = self.txn.lock().await;
+            if let Err(e) = state.begin_read_only(rds).await {
+                return Err(error_response("ERROR", "25001", e.to_string()));
+            }
+            let implicit_id = state.transaction_id().map(str::to_owned);
+            drop(state);
+            let result = self
+                .execute_once(rds, sql, parameters, implicit_id.as_deref())
+                .await;
+            let mut state = self.txn.lock().await;
+            match result {
+                Ok(resp) => match state.commit(rds).await {
+                    Ok(_) => Ok(resp),
+                    Err(e) => Err(error_response("ERROR", "25P01", e.to_string())),
+                },
+                Err(resp) => {
+                    let _ = state.rollback(rds).await;
+                    Err(resp)
+                }
+            }
+        } else {
+            self.execute_once(rds, sql, parameters, txn_id.as_deref())
+                .await
+        }
+    }
+
+    /// Run one statement against the Data API (with auto-pagination) using the
+    /// given transaction id, and translate the outcome into a pg `Response`.
+    /// This is the shared body used by both the plain path and the implicit
+    /// read-only transaction wrap in [`run_sql`].
+    async fn execute_once(
+        &self,
+        rds: &Arc<dyn RdsClient>,
+        sql: &str,
+        parameters: Vec<SqlParameter>,
+        txn_id: Option<&str>,
+    ) -> Result<Response, Response> {
+        match crate::rds::execute_paginated(rds.as_ref(), sql, parameters, txn_id).await {
             Ok(out) => Ok(response_from_output(sql, out)),
             Err(e) => {
                 let msg = rds_error_msg(&e);
@@ -354,6 +412,18 @@ impl Connection {
                 self.txn.lock().await.mark_failed();
                 Err(error_response("ERROR", "42000", msg))
             }
+        }
+    }
+
+    /// Begin a transaction, honoring the connection's `read_only` flag: a
+    /// read-only target opens the transaction as `READ ONLY` so every
+    /// statement in it is engine-enforced read-only.
+    async fn begin_txn(&self, rds: &Arc<dyn RdsClient>) -> Result<(), crate::rds::txn::TxnError> {
+        let mut state = self.txn.lock().await;
+        if *self.read_only.lock().await {
+            state.begin_read_only(rds).await
+        } else {
+            state.begin(rds).await
         }
     }
 }
@@ -529,7 +599,12 @@ impl Connection {
 
         let sql = rewriter::rewrite(raw_sql).sql;
 
-        match intercept::classify(&sql) {
+        let action = if *self.read_only.lock().await {
+            intercept::classify_read_only(&sql)
+        } else {
+            intercept::classify(&sql)
+        };
+        match action {
             Action::Reject(op) => PortalState::Reject(op),
             Action::Begin => PortalState::Begin,
             Action::Commit => PortalState::Commit,
@@ -650,7 +725,7 @@ impl ExtendedQueryHandler for Connection {
                         ))
                     }
                 };
-                match self.txn.lock().await.begin(&rds).await {
+                match self.begin_txn(&rds).await {
                     Ok(_) => Ok(Response::TransactionStart(Tag::new("BEGIN"))),
                     Err(e) => Ok(error_response("ERROR", "25001", e.to_string())),
                 }

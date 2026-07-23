@@ -90,6 +90,50 @@ pub fn classify(sql: &str) -> Action {
     Action::Execute
 }
 
+/// Read verbs a read-only target may run. Everything else that classifies as
+/// `Execute` (DML, DDL, GRANT/REVOKE, VACUUM/ANALYZE/REINDEX/REFRESH, CALL) is
+/// blocked. `SET`/`SHOW`/`RESET` are allowed because GUI clients emit them on
+/// connect and they cannot mutate table data; transaction verbs are handled by
+/// `classify` before this check runs.
+static READ_VERB: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^\s*(SELECT|WITH|VALUES|TABLE|EXPLAIN|SHOW|SET|RESET)\b").unwrap()
+});
+
+/// `EXPLAIN ... ANALYZE` actually *executes* the analyzed statement, so
+/// `EXPLAIN ANALYZE INSERT ...` is a write. Match `EXPLAIN` followed anywhere
+/// (before the wrapped statement) by the `ANALYZE` option, in both the bare
+/// (`EXPLAIN ANALYZE ...`) and parenthesized (`EXPLAIN (ANALYZE, ...) ...`)
+/// forms. Plain `EXPLAIN`/`EXPLAIN VERBOSE` (planning only, no execution) is
+/// not matched and stays allowed.
+static EXPLAIN_ANALYZE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^\s*EXPLAIN\b[\s\S]*?\bANALYZE\b").unwrap());
+
+/// A data-modifying statement inside a CTE (`WITH x AS (INSERT ...) ...`) runs
+/// the write even though the outer statement leads with `WITH`. Match a `WITH`
+/// whose first parenthesized body opens with a write verb.
+static WRITABLE_CTE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^\s*WITH\b[\s\S]*?\(\s*(INSERT|UPDATE|DELETE|MERGE)\b").unwrap());
+
+/// Like [`classify`], but for a target configured `read_only`. This is a
+/// *fast-reject* layer: it turns the obvious write shapes into a clean pg error
+/// without a Data API round-trip. It is NOT the security boundary — that is the
+/// engine-enforced `SET TRANSACTION READ ONLY` wrap in the server (see
+/// `TxnState::begin_read_only`), which also catches writes this regex cannot
+/// see (volatile writing functions in a `SELECT`, etc). Transaction control and
+/// unsupported-op rejections behave exactly as in `classify`.
+pub fn classify_read_only(sql: &str) -> Action {
+    match classify(sql) {
+        Action::Execute
+            if !READ_VERB.is_match(sql)
+                || EXPLAIN_ANALYZE.is_match(sql)
+                || WRITABLE_CTE.is_match(sql) =>
+        {
+            Action::Reject("write statement on read-only target")
+        }
+        other => other,
+    }
+}
+
 /// Detect the leading SQL verb for the pg `CommandComplete` tag.
 /// Returns None if the verb is not one we tag specially (caller falls back to "SELECT 0" etc.).
 pub fn leading_verb(sql: &str) -> Option<&'static str> {
@@ -192,9 +236,88 @@ mod tests {
     }
 
     #[test]
+    fn read_only_allows_reads_and_session_verbs() {
+        for sql in [
+            "SELECT 1",
+            "  select * from t",
+            "WITH x AS (SELECT 1) SELECT * FROM x",
+            "VALUES (1)",
+            "TABLE users",
+            "EXPLAIN SELECT 1",
+            "SHOW server_version",
+            "SET search_path = public",
+            "RESET search_path",
+            "BEGIN",
+            "COMMIT",
+            "ROLLBACK",
+        ] {
+            assert_ne!(
+                classify_read_only(sql),
+                Action::Reject("write statement on read-only target"),
+                "expected {sql:?} to be allowed on a read-only target"
+            );
+        }
+    }
+
+    #[test]
+    fn read_only_blocks_writes() {
+        let w = Action::Reject("write statement on read-only target");
+        assert_eq!(classify_read_only("INSERT INTO t (a) VALUES (1)"), w);
+        assert_eq!(classify_read_only("UPDATE t SET a = 1"), w);
+        assert_eq!(classify_read_only("DELETE FROM t"), w);
+        assert_eq!(classify_read_only("MERGE INTO t ..."), w);
+        assert_eq!(classify_read_only("TRUNCATE t"), w);
+        assert_eq!(classify_read_only("CREATE TABLE t (a int)"), w);
+        assert_eq!(classify_read_only("DROP TABLE t"), w);
+        assert_eq!(classify_read_only("ALTER TABLE t ADD b int"), w);
+        assert_eq!(classify_read_only("GRANT ALL ON t TO r"), w);
+        assert_eq!(classify_read_only("CALL do_write()"), w);
+        assert_eq!(classify_read_only("VACUUM t"), w);
+    }
+
+    #[test]
+    fn read_only_blocks_explain_analyze_and_writable_cte() {
+        let w = Action::Reject("write statement on read-only target");
+        // EXPLAIN ANALYZE executes the analyzed statement — a write.
+        assert_eq!(
+            classify_read_only("EXPLAIN ANALYZE INSERT INTO t VALUES (1)"),
+            w
+        );
+        assert_eq!(
+            classify_read_only("EXPLAIN (ANALYZE, BUFFERS) DELETE FROM t"),
+            w
+        );
+        assert_eq!(
+            classify_read_only("  explain   analyze\tupdate t set a=1"),
+            w
+        );
+        // Writable CTE runs the write inside the WITH.
+        assert_eq!(
+            classify_read_only("WITH x AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM x"),
+            w
+        );
+        // Plain EXPLAIN (planning only) and harmless CTE stay allowed.
+        assert_ne!(classify_read_only("EXPLAIN SELECT 1"), w);
+        assert_ne!(classify_read_only("EXPLAIN VERBOSE SELECT 1"), w);
+        assert_ne!(
+            classify_read_only("WITH x AS (SELECT 1) SELECT * FROM x"),
+            w
+        );
+    }
+
+    #[test]
+    fn read_only_still_rejects_unsupported_ops() {
+        // Unsupported-op rejections keep their own label, not the write label.
+        assert_eq!(
+            classify_read_only("COPY users TO STDOUT"),
+            Action::Reject("COPY")
+        );
+        assert_eq!(classify_read_only("LISTEN ch"), Action::Reject("LISTEN"));
+    }
+
+    #[test]
     fn does_not_misclassify_identifiers_starting_with_keywords() {
-        // "SELECT * FROM listen" uses listen as a table name, not a LISTEN statement.
-        assert_eq!(classify("SELECT * FROM listen"), Action::Execute);
+        // "SELECT * FROM listen" uses listen as a table name, not a LISTEN statement.        assert_eq!(classify("SELECT * FROM listen"), Action::Execute);
         // A column called "begin"
         assert_eq!(classify("SELECT begin FROM events"), Action::Execute);
     }

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-target `read_only` config flag. When set, the proxy is a hard read-only
+  boundary: every statement runs inside an engine-enforced `SET TRANSACTION
+  READ ONLY` transaction, so PostgreSQL rejects any write (including writable
+  CTEs, volatile writing functions, and `EXPLAIN ANALYZE` of a write). A
+  fast-reject layer turns the obvious write shapes into a clean pg error with
+  no Data API round-trip.
+
 ## [0.4.2](https://github.com/ra100/pgea/compare/v0.4.1...v0.4.2) - 2026-07-22
 
 ### Fixed

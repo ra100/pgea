@@ -65,6 +65,13 @@ pub struct Target {
     pub region: String,
     #[serde(default)]
     pub profile: Option<String>,
+    /// When true, the proxy rejects any write statement (DML, DDL,
+    /// GRANT/REVOKE, VACUUM/ANALYZE/REINDEX/REFRESH, CALL) against this
+    /// target with a clean pg error. Read statements, transaction control,
+    /// and harmless session verbs (SET/SHOW/RESET) are still allowed so GUI
+    /// clients connect. Defaults to false (writes allowed).
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 fn default_listen() -> String {
