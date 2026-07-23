@@ -122,6 +122,33 @@ region      = "{region}"
     Some(Arc::new(config))
 }
 
+/// Like [`e2e_config_or_skip`] but marks the `e2e` target `read_only = true`,
+/// so writes should be rejected by the proxy before reaching the Data API.
+fn e2e_read_only_config_or_skip(test_name: &str) -> Option<Arc<Config>> {
+    let base = e2e_config_or_skip(test_name)?;
+    let target = base.target("e2e").expect("e2e target present");
+    let profile_line = target
+        .profile
+        .as_deref()
+        .map(|p| format!("profile     = \"{p}\"\n"))
+        .unwrap_or_default();
+    let toml = format!(
+        r#"
+listen = "127.0.0.1:5433"
+
+[targets.e2e]
+cluster_arn = "{}"
+secret_arn  = "{}"
+database    = "{}"
+region      = "{}"
+read_only   = true
+{profile_line}"#,
+        target.cluster_arn, target.secret_arn, target.database, target.region,
+    );
+    let config = Config::parse(&toml).expect("read-only e2e config parses");
+    Some(Arc::new(config))
+}
+
 /// Bind an ephemeral 127.0.0.1 port and spawn the proxy with `test_client=None`
 /// so it constructs a real `AwsRdsClient` via the standard credential chain.
 async fn spawn_real_proxy(config: Arc<Config>) -> String {
@@ -224,6 +251,62 @@ async fn e2e_intercepted_op_returns_clean_error() {
         db_err.message().to_lowercase().contains("savepoint"),
         "unexpected error message: {}",
         db_err.message()
+    );
+}
+
+#[tokio::test]
+async fn e2e_read_only_target_blocks_writes_allows_reads() {
+    let Some(config) =
+        e2e_read_only_config_or_skip("e2e_read_only_target_blocks_writes_allows_reads")
+    else {
+        return;
+    };
+    let addr = spawn_real_proxy(config).await;
+    let client = connect(&addr).await;
+
+    // A read succeeds against a read-only target. This also exercises the
+    // engine-enforced path: the proxy runs it inside an implicit
+    // `SET TRANSACTION READ ONLY` transaction (begin/set/execute/commit), so a
+    // broken wrap would fail this SELECT.
+    let rows = client
+        .simple_query("SELECT 1")
+        .await
+        .expect("SELECT should be allowed on a read-only target");
+    let read: Vec<_> = rows
+        .into_iter()
+        .filter_map(|r| match r {
+            tokio_postgres::SimpleQueryMessage::Row(row) => Some(row),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].get(0), Some("1"));
+
+    // A plain DDL write is rejected (regex fast-reject, 0A000) without ever
+    // creating anything, so there is nothing to clean up.
+    let err = client
+        .simple_query("CREATE TABLE e2e_read_only_probe (id INT)")
+        .await
+        .expect_err("CREATE should be rejected on a read-only target");
+    let db_err = err.as_db_error().expect("expected a pg ErrorResponse");
+    assert_eq!(db_err.code().code(), "0A000");
+    assert!(
+        db_err.message().to_lowercase().contains("read-only"),
+        "unexpected error message: {}",
+        db_err.message()
+    );
+
+    // A writable CTE leads with `WITH` (a read verb) yet performs an INSERT.
+    // The fast-reject regex now catches this shape; even if it did not, the
+    // engine-enforced read-only transaction would reject it. Either way the
+    // client sees an error and nothing is written.
+    let err = client
+        .simple_query("WITH x AS (INSERT INTO e2e_ro_nope VALUES (1) RETURNING *) SELECT * FROM x")
+        .await
+        .expect_err("writable CTE should be rejected on a read-only target");
+    assert!(
+        err.as_db_error().is_some(),
+        "expected a pg ErrorResponse for the writable CTE"
     );
 }
 

@@ -140,6 +140,7 @@ mod tests {
             database: "appdb".into(),
             region: "us-east-1".into(),
             profile: None,
+            read_only: false,
         }
     }
 
