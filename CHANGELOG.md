@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/ra100/pgea/compare/v0.4.2...v0.5.0) - 2026-07-23
+
+### Added
+
+- *(read-only)* add per-target read_only flag with engine-enforced boundary
+
 ### Added
 
 - Per-target `read_only` config flag. When set, the proxy is a hard read-only
